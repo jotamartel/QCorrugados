@@ -117,13 +117,23 @@ const COLORS = [
   '#bc8f8f', '#d2691e', '#b8860b', '#c49a6c', '#f4a460'
 ]
 
-// Función para calcular medidas desplegadas RSC
+// Función para calcular medidas desplegadas RSC (desde cm)
 function calculateUnfolded(l: number, w: number, h: number): { unfoldedW: number; unfoldedH: number } {
   // Fórmula RSC (Regular Slotted Container):
   // Ancho desplegado = 2L + 2W + 50mm (solapa pegue)
   // Alto desplegado = H + W (solapas + cuerpo)
   const unfoldedW = (2 * l + 2 * w) * 10 + 50 // convertir cm a mm y agregar solapa
   const unfoldedH = (h + w) * 10 // convertir cm a mm
+  return { unfoldedW, unfoldedH }
+}
+
+// Función para calcular medidas desplegadas RSC (desde mm)
+function calculateUnfoldedFromMM(l: number, w: number, h: number): { unfoldedW: number; unfoldedH: number } {
+  // Fórmula RSC (Regular Slotted Container):
+  // Ancho desplegado = 2L + 2W + 50mm (solapa pegue)
+  // Alto desplegado = H + W (solapas + cuerpo)
+  const unfoldedW = 2 * l + 2 * w + 50 // ya en mm, agregar solapa
+  const unfoldedH = h + w // ya en mm
   return { unfoldedW, unfoldedH }
 }
 
@@ -562,11 +572,11 @@ export default function CajasProduccion() {
     const qty = parseInt(customForm.quantity) || 0
     
     if (l > 0 && w > 0 && h > 0) {
-      const { unfoldedW, unfoldedH } = calculateUnfolded(l, w, h)
+      const { unfoldedW, unfoldedH } = calculateUnfoldedFromMM(l, w, h)
       const id = `custom-${l}x${w}x${h}-${Date.now()}`
       const newBox: BoxType = {
         id,
-        name: `${l}×${w}×${h}`,
+        name: `${l}×${w}×${h}mm`,
         l, w, h,
         unfoldedW,
         unfoldedH,
@@ -951,7 +961,7 @@ export default function CajasProduccion() {
                 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
                   <div>
-                    <label className="text-xs text-purple-600 font-semibold">LARGO (cm)</label>
+                    <label className="text-xs text-purple-600 font-semibold">LARGO (mm)</label>
                     <input
                       type="number"
                       value={customForm.l}
@@ -962,7 +972,7 @@ export default function CajasProduccion() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-purple-600 font-semibold">ANCHO (cm)</label>
+                    <label className="text-xs text-purple-600 font-semibold">ANCHO (mm)</label>
                     <input
                       type="number"
                       value={customForm.w}
@@ -973,7 +983,7 @@ export default function CajasProduccion() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-purple-600 font-semibold">ALTO (cm)</label>
+                    <label className="text-xs text-purple-600 font-semibold">ALTO (mm)</label>
                     <input
                       type="number"
                       value={customForm.h}
@@ -1001,7 +1011,7 @@ export default function CajasProduccion() {
                   <div className="bg-white/50 rounded p-2 mb-3 text-sm">
                     <span className="text-purple-600">Desplegado RSC: </span>
                     <strong>
-                      {(2 * parseInt(customForm.l) + 2 * parseInt(customForm.w)) * 10 + 50} × {(parseInt(customForm.h) + parseInt(customForm.w)) * 10} mm
+                      {2 * parseInt(customForm.l) + 2 * parseInt(customForm.w) + 50} × {parseInt(customForm.h) + parseInt(customForm.w)} mm
                     </strong>
                   </div>
                 )}
