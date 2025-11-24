@@ -927,6 +927,12 @@ export default function CajasProduccion() {
             <span className="font-semibold">2 cortes de largo</span> por plancha
           </div>
         </div>
+        <div className="flex items-center gap-2 bg-red-100 px-3 py-1 rounded">
+          <AlertTriangle className="w-4 h-4 text-red-600" />
+          <div className="text-xs text-red-700">
+            <span className="font-semibold">Largo máx:</span> 2080mm
+          </div>
+        </div>
       </div>
 
       {/* Vista: Catálogo */}
@@ -1007,18 +1013,66 @@ export default function CajasProduccion() {
                 </div>
                 
                 {/* Preview de medidas calculadas */}
-                {customForm.l && customForm.w && customForm.h && (
-                  <div className="bg-white/50 rounded p-2 mb-3 text-sm">
-                    <span className="text-purple-600">Desplegado RSC: </span>
-                    <strong>
-                      {2 * parseInt(customForm.l) + 2 * parseInt(customForm.w) + 50} × {parseInt(customForm.h) + parseInt(customForm.w)} mm
-                    </strong>
-                  </div>
-                )}
+                {customForm.l && customForm.w && customForm.h && (() => {
+                  const unfoldedW = 2 * parseInt(customForm.l) + 2 * parseInt(customForm.w) + 50
+                  const unfoldedH = parseInt(customForm.h) + parseInt(customForm.w)
+                  const exceedsLength = unfoldedW > 2080
+                  const exceedsWidth160 = unfoldedH > 1520
+                  const exceedsWidth130 = unfoldedH > 1230
+                  
+                  return (
+                    <div className="space-y-2 mb-3">
+                      <div className={`rounded p-2 text-sm ${exceedsLength ? 'bg-red-100' : 'bg-white/50'}`}>
+                        <span className="text-purple-600">Desplegado RSC: </span>
+                        <strong className={exceedsLength ? 'text-red-600' : ''}>
+                          {unfoldedW} × {unfoldedH} mm
+                        </strong>
+                      </div>
+                      
+                      {exceedsLength && (
+                        <div className="bg-red-100 border border-red-300 rounded p-2 text-xs text-red-700 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                          <span>
+                            <strong>⚠️ Excede límite de largo:</strong> El largo desplegado ({unfoldedW}mm) supera el máximo de la máquina (2080mm). 
+                            Reducí L o W.
+                          </span>
+                        </div>
+                      )}
+                      
+                      {exceedsWidth160 && !exceedsWidth130 && (
+                        <div className="bg-amber-100 border border-amber-300 rounded p-2 text-xs text-amber-700 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                          <span>
+                            Solo cabe en bobina 1.30m ({unfoldedH}mm &gt; 1520mm útiles de 1.60m)
+                          </span>
+                        </div>
+                      )}
+                      
+                      {exceedsWidth160 && exceedsWidth130 && (
+                        <div className="bg-red-100 border border-red-300 rounded p-2 text-xs text-red-700 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                          <span>
+                            <strong>⚠️ Excede ancho de bobinas:</strong> El alto desplegado ({unfoldedH}mm) supera ambas bobinas. 
+                            Reducí H o W.
+                          </span>
+                        </div>
+                      )}
+                      
+                      {!exceedsLength && !exceedsWidth160 && (
+                        <div className="bg-green-100 border border-green-300 rounded p-2 text-xs text-green-700 flex items-center gap-2">
+                          <Check className="w-4 h-4 flex-shrink-0" />
+                          <span>✓ Compatible con ambas bobinas</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 
                 <button
                   onClick={addCustomBox}
-                  disabled={!customForm.l || !customForm.w || !customForm.h}
+                  disabled={!customForm.l || !customForm.w || !customForm.h || 
+                    (2 * parseInt(customForm.l || '0') + 2 * parseInt(customForm.w || '0') + 50) > 2080 ||
+                    (parseInt(customForm.h || '0') + parseInt(customForm.w || '0')) > 1520}
                   className="w-full bg-purple-600 text-white py-2 rounded font-display tracking-wider hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   <Check className="w-4 h-4" />
