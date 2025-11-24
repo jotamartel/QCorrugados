@@ -1,9 +1,10 @@
 import type { Metadata } from 'next'
 import './globals.css'
+import { Providers } from './providers'
 
 export const metadata: Metadata = {
-  title: 'Gestión de Producción de Cajas',
-  description: 'Sistema de optimización de corte de bobinas para cajas de cartón',
+  title: 'Q Corrugados - Sistema de Gestión',
+  description: 'Sistema de gestión de producción y órdenes de cajas de cartón corrugado',
 }
 
 export default function RootLayout({
@@ -13,7 +14,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es">
-      <body>{children}</body>
+      <body>
+        <Providers>
+          {children}
+        </Providers>
+      </body>
     </html>
   )
 }

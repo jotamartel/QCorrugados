@@ -1,80 +1,171 @@
-# Sistema de Gestión de Producción de Cajas
+# Q Corrugados - Sistema de Gestión
 
-Sistema para optimizar el corte de bobinas de cartón y planificar la producción de cajas.
+Sistema completo de gestión de producción y órdenes de cajas de cartón corrugado.
 
-## Medidas Calculadas
+## Características
 
-Todas las medidas desplegadas fueron calculadas con la fórmula RSC (Regular Slotted Container):
-- **Ancho desplegado** = 2L + 2W + 50mm (solapa de pegue)
-- **Alto desplegado** = H + W (solapas superiores/inferiores + cuerpo)
+### Portal de Clientes
+- ✅ Registro y login de clientes
+- ✅ Catálogo de cajas disponibles
+- ✅ Crear órdenes de compra
+- ✅ Selección de fecha de entrega (mínimo 7 días)
+- ✅ Ver historial de órdenes
+- ✅ Gestión de perfil
 
-| Caja | L×W×H (cm) | Desplegado (mm) | Cajas/fila 1.60m | Cajas/fila 1.30m |
-|------|------------|-----------------|------------------|------------------|
-| 20×20×10 | 20×20×10 | 850 × 300 | 5 (1.3% desp.) | 4 (2.4% desp.) |
-| 20×20×20 | 20×20×20 | 850 × 400 | 3 (21.1% desp.) | 3 (2.4% desp.) |
-| 30×20×15 | 30×20×15 | 1050 × 350 | 4 (7.9% desp.) | 3 (14.6% desp.) |
-| 30×20×20 | 30×20×20 | 1050 × 400 | 3 (21.1% desp.) | 3 (2.4% desp.) |
-| 40×30×20 | 40×30×20 | 1450 × 500 | 3 (1.3% desp.) | 2 (18.7% desp.) |
-| 40×30×30 | 40×30×30 | 1450 × 600 | 2 (21.1% desp.) | 2 (2.4% desp.) |
-| 50×40×30 | 50×40×30 | 1850 × 700 | 2 (7.9% desp.) | 1 (43.1% desp.) |
-| 50×40×40 | 50×40×40 | 1850 × 800 | 1 (47.4% desp.) | 1 (35.0% desp.) |
-| 60×40×30 | 60×40×30 | 2050 × 700 | 2 (7.9% desp.) | 1 (43.1% desp.) |
-| 60×40×40 | 60×40×40 | 2050 × 800 | 1 (47.4% desp.) | 1 (35.0% desp.) |
-| 70×50×50 | 70×50×50 | 2450 × 1000 | 1 (34.2% desp.) | 1 (18.7% desp.) |
+### Panel de Administración
+- ✅ Ver todas las órdenes
+- ✅ Gestión de estados (Pendiente → Aprobada → En Producción → Lista → Entregada)
+- ✅ Gestión de clientes
+- ✅ Ver cajas más pedidas por cliente
+- ✅ Análisis de frecuencia de compra
+- ✅ Catálogo de cajas
+- ✅ Acceso a herramienta de optimización de producción
 
-## Bobinas
+### Producción
+- ✅ Optimización de corte de bobinas
+- ✅ Soporte para Doble Chapetón (cajas grandes)
+- ✅ Análisis con IA (Claude)
 
-| Bobina | Ancho Total | Refilado | Ancho Útil |
-|--------|-------------|----------|------------|
-| 1.60m | 1600mm | 80mm (40mm/lado) | 1520mm |
-| 1.30m | 1300mm | 70mm (35mm/lado) | 1230mm |
+---
 
-> Nota: El refilado mínimo es 2cm por lado = 4cm total, pero en la bobina 1.30m queda 7cm.
+## Configuración de Supabase
 
-## Desplegar en Vercel
+### 1. Crear Proyecto en Supabase
 
-### Opción 1: Desde la interfaz web
+1. Ve a [supabase.com](https://supabase.com) y crea una cuenta
+2. Crea un nuevo proyecto
+3. Espera a que se inicialice
 
-1. Subí este proyecto a un repositorio en GitHub
-2. Andá a [vercel.com](https://vercel.com)
-3. Click en "Add New Project"
-4. Importá el repositorio
-5. Vercel detectará Next.js automáticamente
-6. Click en "Deploy"
+### 2. Ejecutar Schema SQL
 
-### Opción 2: Usando Vercel CLI
+1. Ve a **SQL Editor** en el panel de Supabase
+2. Copia todo el contenido de `supabase-schema.sql`
+3. Pégalo en el editor y ejecuta
+4. Esto creará todas las tablas, funciones, triggers y políticas de seguridad
 
-```bash
-# Instalar Vercel CLI
-npm install -g vercel
+### 3. Configurar Variables de Entorno
 
-# Loguearte
-vercel login
+1. En tu proyecto Supabase, ve a **Settings > API**
+2. Copia:
+   - **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
+   - **anon public key** → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-# Desplegar (desde el directorio del proyecto)
-cd cajas-produccion
-vercel --prod
+3. Crea un archivo `.env.local` en la raíz del proyecto:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://tu-proyecto.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=tu-anon-key
 ```
+
+### 4. Crear Usuario Admin
+
+Después de ejecutar el schema, necesitas crear un usuario admin:
+
+1. Ve a **Authentication > Users** en Supabase
+2. Click en "Add user" > "Create new user"
+3. Ingresa email y contraseña
+4. Luego ve a **Table Editor > profiles**
+5. Encuentra el usuario y cambia el campo `role` de `client` a `admin`
+
+---
+
+## Estructura de la Base de Datos
+
+```
+profiles          - Usuarios (extiende auth.users)
+box_catalog       - Catálogo de cajas
+client_boxes      - Cajas preferidas por cliente (historial)
+orders            - Órdenes de compra
+order_items       - Items de cada orden
+order_history     - Historial de cambios de estado
+```
+
+### Vistas
+- `orders_with_client` - Órdenes con info del cliente
+- `client_analytics` - Análisis de clientes
+
+---
+
+## Rutas de la Aplicación
+
+| Ruta | Descripción |
+|------|-------------|
+| `/login` | Login y registro |
+| `/dashboard` | Redirige según rol |
+| `/cliente` | Portal del cliente |
+| `/admin` | Panel de administración |
+| `/` | Herramienta de producción |
+
+---
 
 ## Desarrollo Local
 
 ```bash
+# Instalar dependencias
 npm install
+
+# Ejecutar en desarrollo
 npm run dev
+
+# Build de producción
+npm run build
 ```
 
-Abrir [http://localhost:3000](http://localhost:3000)
+---
 
-## Funcionalidades
+## Deploy en Vercel
 
-1. **Catálogo de Cajas**: Vista de todas las cajas con visualización del desplegado y métricas de aprovechamiento
-2. **Orden de Producción**: Agregá cantidades de cada tipo de caja para producir
-3. **Optimización**: El sistema calcula automáticamente la mejor bobina para cada caja y muestra los metros lineales necesarios
+1. Sube el proyecto a GitHub
+2. Conecta con Vercel
+3. Configura las variables de entorno:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `ANTHROPIC_API_KEY` (opcional, para IA)
 
-## Stack Técnico
+---
 
-- Next.js 14
-- React 18
-- TypeScript
-- Tailwind CSS
-- Lucide React (iconos)
+## Flujo de Órdenes
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Cliente                                                  │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐              │
+│  │ Registro│ →  │ Catálogo│ →  │  Orden  │              │
+│  └─────────┘    └─────────┘    └─────────┘              │
+└──────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────┐
+│  Admin                                                    │
+│                                                           │
+│  PENDIENTE → APROBADA → EN PRODUCCIÓN → LISTA → ENTREGADA│
+│                                                           │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Seguridad (Row Level Security)
+
+- Los clientes solo ven sus propias órdenes y perfil
+- Los admins ven todo
+- Las cajas activas son visibles para todos
+- Los cambios de estado se registran automáticamente
+
+---
+
+## Funcionalidades Automáticas
+
+1. **Al crear orden**: Se actualizan los totales automáticamente
+2. **Al cambiar estado**: Se registra en `order_history`
+3. **Al agregar item**: Se actualiza `client_boxes` con estadísticas
+4. **Al registrar usuario**: Se crea perfil automáticamente
+
+---
+
+## Cajas con Doble Chapetón
+
+Para cajas con largo desplegado > 2080mm:
+- Se marcan con badge "2P" (2 planchas)
+- Cada caja consume 2 planchas en producción
+- Los totales reflejan las planchas reales necesarias
