@@ -1,0 +1,99 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --kraft-bg: #f5f0e8;
+  --cardboard: #d4a574;
+  --cardboard-dark: #b8860b;
+  --ink: #2d2a26;
+  --danger: #c0392b;
+  --success: #27ae60;
+}
+
+body {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--kraft-bg);
+  background-image: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 50px,
+      rgba(139, 105, 20, 0.03) 50px,
+      rgba(139, 105, 20, 0.03) 51px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 50px,
+      rgba(139, 105, 20, 0.03) 50px,
+      rgba(139, 105, 20, 0.03) 51px
+    );
+  color: var(--ink);
+}
+
+.cardboard-texture {
+  background: linear-gradient(135deg, #d4a574 0%, #c49a6c 50%, #b8860b 100%);
+  position: relative;
+}
+
+.cardboard-texture::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%' height='100%' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+.fold-line {
+  stroke-dasharray: 8 4;
+  stroke: #8b6914;
+  stroke-width: 1.5;
+}
+
+.cut-line {
+  stroke: #c0392b;
+  stroke-width: 2;
+}
+
+.input-industrial {
+  background: rgba(255,255,255,0.8);
+  border: 2px solid #8b6914;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+}
+
+.input-industrial:focus {
+  outline: none;
+  border-color: #2d2a26;
+  box-shadow: 4px 4px 0 #8b6914;
+}
+
+.btn-industrial {
+  background: #2d2a26;
+  color: #f5f0e8;
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.1em;
+  transition: all 0.15s ease;
+}
+
+.btn-industrial:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 4px 4px 0 #8b6914;
+}
+
+.btn-industrial:active {
+  transform: translate(0, 0);
+  box-shadow: none;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: #8b6914; }
+  50% { border-color: #27ae60; }
+}
+
+.optimized {
+  animation: pulse-border 2s ease-in-out infinite;
+}
