@@ -13,6 +13,8 @@ interface BoxType {
   unfoldedW: number // largo de la plancha (dirección de la bobina)
   unfoldedH: number // alto de la plancha (ancho de la bobina)
   isCustom?: boolean
+  isDobleChapeton?: boolean // true si requiere 2 planchas pegadas
+  planchaW?: number // largo de cada plancha individual (para doble chapetón)
 }
 
 interface ProductionItem {
@@ -104,7 +106,8 @@ const DEFAULT_BOX_TYPES: BoxType[] = [
   { id: '50x40x40', name: '50×40×40', l: 50, w: 40, h: 40, unfoldedW: 1850, unfoldedH: 800 },
   { id: '60x40x30', name: '60×40×30', l: 60, w: 40, h: 30, unfoldedW: 2050, unfoldedH: 700 },
   { id: '60x40x40', name: '60×40×40', l: 60, w: 40, h: 40, unfoldedW: 2050, unfoldedH: 800 },
-  { id: '70x50x50', name: '70×50×50', l: 70, w: 50, h: 50, unfoldedW: 2450, unfoldedH: 1000 },
+  // Doble chapetón: 2 planchas de 1250x1000mm c/u
+  { id: '70x50x50', name: '70×50×50 (2P)', l: 70, w: 50, h: 50, unfoldedW: 1250, unfoldedH: 1000, isDobleChapeton: true, planchaW: 1250 },
 ]
 
 const BOBINAS = {
@@ -116,6 +119,10 @@ const COLORS = [
   '#d4a574', '#8b6914', '#cd853f', '#daa520', '#a0522d',
   '#bc8f8f', '#d2691e', '#b8860b', '#c49a6c', '#f4a460'
 ]
+
+// Límite máximo de largo de plancha
+const MAX_PLANCHA_LENGTH = 2080
+const CHAPETON_OVERLAP = 25 // mm de solapamiento para pegado en doble chapetón
 
 // Función para calcular medidas desplegadas RSC (desde cm)
 function calculateUnfolded(l: number, w: number, h: number): { unfoldedW: number; unfoldedH: number } {
@@ -135,6 +142,34 @@ function calculateUnfoldedFromMM(l: number, w: number, h: number): { unfoldedW: 
   const unfoldedW = 2 * l + 2 * w + 50 // ya en mm, agregar solapa
   const unfoldedH = h + w // ya en mm
   return { unfoldedW, unfoldedH }
+}
+
+// Función para calcular doble chapetón
+function calculateDobleChapeton(unfoldedW: number, unfoldedH: number): {
+  needsDobleChapeton: boolean
+  planchaW: number
+  planchaH: number
+  planchasPerBox: number
+} {
+  if (unfoldedW <= MAX_PLANCHA_LENGTH) {
+    return {
+      needsDobleChapeton: false,
+      planchaW: unfoldedW,
+      planchaH: unfoldedH,
+      planchasPerBox: 1
+    }
+  }
+  
+  // Doble chapetón: dividir en 2 planchas con solapamiento
+  // Cada plancha = (largo_total / 2) + solapamiento
+  const planchaW = Math.ceil(unfoldedW / 2) + CHAPETON_OVERLAP
+  
+  return {
+    needsDobleChapeton: true,
+    planchaW,
+    planchaH: unfoldedH,
+    planchasPerBox: 2
+  }
 }
 
 // Componente para visualizar caja desplegada
@@ -573,14 +608,18 @@ export default function CajasProduccion() {
     
     if (l > 0 && w > 0 && h > 0) {
       const { unfoldedW, unfoldedH } = calculateUnfoldedFromMM(l, w, h)
+      const chapeton = calculateDobleChapeton(unfoldedW, unfoldedH)
       const id = `custom-${l}x${w}x${h}-${Date.now()}`
+      
       const newBox: BoxType = {
         id,
-        name: `${l}×${w}×${h}mm`,
+        name: chapeton.needsDobleChapeton ? `${l}×${w}×${h}mm (2P)` : `${l}×${w}×${h}mm`,
         l, w, h,
-        unfoldedW,
+        unfoldedW: chapeton.planchaW, // Para doble chapetón, guardamos el tamaño de cada plancha
         unfoldedH,
-        isCustom: true
+        isCustom: true,
+        isDobleChapeton: chapeton.needsDobleChapeton,
+        planchaW: chapeton.planchaW
       }
       setCustomBoxes(prev => [...prev, newBox])
       
@@ -702,6 +741,7 @@ export default function CajasProduccion() {
     return production.map(item => {
       const box = BOX_TYPES.find(b => b.id === item.boxId)!
       const results: OptimizationResult[] = []
+      const planchasPerBox = box.isDobleChapeton ? 2 : 1
       
       for (const [key, bobina] of Object.entries(BOBINAS)) {
         const bobinaKey = key as '1.60' | '1.30'
@@ -711,7 +751,8 @@ export default function CajasProduccion() {
           const rowWidthMm = boxesPerRow * box.unfoldedH
           const wastePerRowMm = bobina.usable - rowWidthMm
           const wastePercent = (wastePerRowMm / bobina.usable) * 100
-          const totalRows = Math.ceil(item.quantity / boxesPerRow)
+          // Para doble chapetón: cada caja necesita 2 planchas, así que el total de filas se multiplica
+          const totalRows = Math.ceil((item.quantity * planchasPerBox) / boxesPerRow)
           const totalLengthM = (totalRows * box.unfoldedW) / 1000
           
           results.push({
@@ -730,7 +771,7 @@ export default function CajasProduccion() {
       }
       return results.sort((a, b) => a.wastePercent - b.wastePercent)
     })
-  }, [production])
+  }, [production, BOX_TYPES])
 
   // Optimización combinada
   const combinedOptimization = useMemo(() => {
@@ -1016,29 +1057,48 @@ export default function CajasProduccion() {
                 {customForm.l && customForm.w && customForm.h && (() => {
                   const unfoldedW = 2 * parseInt(customForm.l) + 2 * parseInt(customForm.w) + 50
                   const unfoldedH = parseInt(customForm.h) + parseInt(customForm.w)
-                  const exceedsLength = unfoldedW > 2080
+                  const chapeton = calculateDobleChapeton(unfoldedW, unfoldedH)
                   const exceedsWidth160 = unfoldedH > 1520
                   const exceedsWidth130 = unfoldedH > 1230
                   
                   return (
                     <div className="space-y-2 mb-3">
-                      <div className={`rounded p-2 text-sm ${exceedsLength ? 'bg-red-100' : 'bg-white/50'}`}>
-                        <span className="text-purple-600">Desplegado RSC: </span>
-                        <strong className={exceedsLength ? 'text-red-600' : ''}>
-                          {unfoldedW} × {unfoldedH} mm
-                        </strong>
+                      {/* Medidas originales */}
+                      <div className="bg-white/50 rounded p-2 text-sm">
+                        <span className="text-purple-600">Desplegado RSC total: </span>
+                        <strong>{unfoldedW} × {unfoldedH} mm</strong>
                       </div>
                       
-                      {exceedsLength && (
-                        <div className="bg-red-100 border border-red-300 rounded p-2 text-xs text-red-700 flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                          <span>
-                            <strong>⚠️ Excede límite de largo:</strong> El largo desplegado ({unfoldedW}mm) supera el máximo de la máquina (2080mm). 
-                            Reducí L o W.
-                          </span>
+                      {/* Doble chapetón */}
+                      {chapeton.needsDobleChapeton && (
+                        <div className="bg-blue-100 border-2 border-blue-400 rounded p-3 text-sm">
+                          <div className="flex items-center gap-2 text-blue-800 font-semibold mb-2">
+                            <Layers className="w-4 h-4" />
+                            DOBLE CHAPETÓN
+                          </div>
+                          <div className="text-blue-700 text-xs space-y-1">
+                            <p>El largo ({unfoldedW}mm) excede el límite de 2080mm.</p>
+                            <p className="font-semibold">Se usarán 2 planchas pegadas:</p>
+                            <div className="bg-white/50 rounded p-2 mt-1">
+                              <span className="font-bold text-blue-900">2 × ({chapeton.planchaW} × {chapeton.planchaH} mm)</span>
+                              <span className="text-blue-600 ml-2">c/u</span>
+                            </div>
+                            <p className="text-xs text-blue-500 mt-1">
+                              Incluye {CHAPETON_OVERLAP}mm de solapamiento para pegado
+                            </p>
+                          </div>
                         </div>
                       )}
                       
+                      {/* Plancha única */}
+                      {!chapeton.needsDobleChapeton && (
+                        <div className="bg-green-50 border border-green-300 rounded p-2 text-sm">
+                          <span className="text-green-700">Plancha única: </span>
+                          <strong className="text-green-800">{chapeton.planchaW} × {chapeton.planchaH} mm</strong>
+                        </div>
+                      )}
+                      
+                      {/* Advertencia de ancho */}
                       {exceedsWidth160 && !exceedsWidth130 && (
                         <div className="bg-amber-100 border border-amber-300 rounded p-2 text-xs text-amber-700 flex items-center gap-2">
                           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
@@ -1058,10 +1118,18 @@ export default function CajasProduccion() {
                         </div>
                       )}
                       
-                      {!exceedsLength && !exceedsWidth160 && (
+                      {/* Estado OK */}
+                      {!exceedsWidth160 && !chapeton.needsDobleChapeton && (
                         <div className="bg-green-100 border border-green-300 rounded p-2 text-xs text-green-700 flex items-center gap-2">
                           <Check className="w-4 h-4 flex-shrink-0" />
-                          <span>✓ Compatible con ambas bobinas</span>
+                          <span>✓ Compatible con ambas bobinas - plancha única</span>
+                        </div>
+                      )}
+                      
+                      {!exceedsWidth160 && chapeton.needsDobleChapeton && (
+                        <div className="bg-blue-100 border border-blue-300 rounded p-2 text-xs text-blue-700 flex items-center gap-2">
+                          <Check className="w-4 h-4 flex-shrink-0" />
+                          <span>✓ Compatible con ambas bobinas - doble chapetón (2 planchas por caja)</span>
                         </div>
                       )}
                     </div>
@@ -1071,7 +1139,6 @@ export default function CajasProduccion() {
                 <button
                   onClick={addCustomBox}
                   disabled={!customForm.l || !customForm.w || !customForm.h || 
-                    (2 * parseInt(customForm.l || '0') + 2 * parseInt(customForm.w || '0') + 50) > 2080 ||
                     (parseInt(customForm.h || '0') + parseInt(customForm.w || '0')) > 1520}
                   className="w-full bg-purple-600 text-white py-2 rounded font-display tracking-wider hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
@@ -1101,16 +1168,25 @@ export default function CajasProduccion() {
                   return (
                     <div 
                       key={box.id}
-                      className={`bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-3 transition-all ${inProduction ? 'ring-2 ring-green-500/50' : ''}`}
+                      className={`bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-3 transition-all ${inProduction ? 'ring-2 ring-green-500/50' : ''} ${box.isDobleChapeton ? 'border-blue-400' : ''}`}
                     >
                       <div className="flex justify-between items-start mb-2">
                         <div>
                           <h3 className="font-display text-lg text-purple-800">{box.name}</h3>
                           <p className="text-xs text-purple-600">
-                            {box.unfoldedW} × {box.unfoldedH} mm
+                            {box.isDobleChapeton ? (
+                              <span className="text-blue-600">2 × ({box.unfoldedW} × {box.unfoldedH} mm)</span>
+                            ) : (
+                              <span>{box.unfoldedW} × {box.unfoldedH} mm</span>
+                            )}
                           </p>
                         </div>
                         <div className="flex items-center gap-1">
+                          {box.isDobleChapeton && (
+                            <span className="bg-blue-500 text-white text-[10px] px-1.5 py-0.5 rounded font-semibold">
+                              2P
+                            </span>
+                          )}
                           {inProduction && (
                             <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded">
                               {inProduction.quantity}
@@ -1125,6 +1201,13 @@ export default function CajasProduccion() {
                           </button>
                         </div>
                       </div>
+                      
+                      {box.isDobleChapeton && (
+                        <div className="bg-blue-100 text-blue-700 text-xs px-2 py-1 rounded mb-2 text-center">
+                          <Layers className="w-3 h-3 inline mr-1" />
+                          Doble Chapetón - 2 planchas/caja
+                        </div>
+                      )}
                       
                       <div className="flex justify-center mb-2">
                         <BoxUnfoldedVisual box={box} scale={0.1} />
@@ -1186,21 +1269,39 @@ export default function CajasProduccion() {
               return (
                 <div 
                   key={box.id}
-                  className={`bg-white/80 border-2 p-3 transition-all border-amber-700/20 ${inProduction ? 'ring-2 ring-green-500/50' : ''}`}
+                  className={`bg-white/80 border-2 p-3 transition-all border-amber-700/20 ${inProduction ? 'ring-2 ring-green-500/50' : ''} ${box.isDobleChapeton ? 'border-blue-400 bg-blue-50/50' : ''}`}
                 >
                   <div className="flex justify-between items-start mb-2">
                     <div>
                       <h3 className="font-display text-lg text-amber-900">{box.name}</h3>
                       <p className="text-xs text-amber-600">
-                        {box.unfoldedW} × {box.unfoldedH} mm
+                        {box.isDobleChapeton ? (
+                          <span className="text-blue-600">2 × ({box.unfoldedW} × {box.unfoldedH} mm)</span>
+                        ) : (
+                          <span>{box.unfoldedW} × {box.unfoldedH} mm</span>
+                        )}
                       </p>
                     </div>
-                    {inProduction && (
-                      <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded">
-                        {inProduction.quantity}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {box.isDobleChapeton && (
+                        <span className="bg-blue-500 text-white text-[10px] px-1.5 py-0.5 rounded font-semibold">
+                          2P
+                        </span>
+                      )}
+                      {inProduction && (
+                        <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded">
+                          {inProduction.quantity}
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  
+                  {box.isDobleChapeton && (
+                    <div className="bg-blue-100 text-blue-700 text-xs px-2 py-1 rounded mb-2 text-center">
+                      <Layers className="w-3 h-3 inline mr-1" />
+                      Doble Chapetón
+                    </div>
+                  )}
                   
                   <div className="flex justify-center mb-2">
                     <BoxUnfoldedVisual box={box} scale={0.1} />
