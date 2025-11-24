@@ -9,6 +9,12 @@ interface BoxData {
   unfoldedW: number
   unfoldedH: number
   quantity: number
+  isDobleChapeton?: boolean
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
 }
 
 interface OptimizeRequest {
@@ -18,12 +24,15 @@ interface OptimizeRequest {
     '1.30': { usable: number }
   }
   apiKey?: string
+  mode?: 'analyze' | 'chat'
+  chatHistory?: ChatMessage[]
+  userMessage?: string
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: OptimizeRequest = await request.json()
-    const { boxes, bobinas } = body
+    const { boxes, bobinas, mode = 'analyze', chatHistory = [], userMessage } = body
     
     // Usar API key del body o de variable de entorno
     const apiKey = body.apiKey || process.env.ANTHROPIC_API_KEY
@@ -35,8 +44,22 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Construir el prompt para Claude
-    const prompt = buildOptimizationPrompt(boxes, bobinas)
+    // Construir mensajes según el modo
+    let messages: { role: 'user' | 'assistant'; content: string }[] = []
+    
+    if (mode === 'analyze') {
+      // Modo análisis inicial: generar hoja de producción
+      const prompt = buildProductionSheetPrompt(boxes, bobinas)
+      messages = [{ role: 'user', content: prompt }]
+    } else {
+      // Modo chat: continuar conversación
+      const systemContext = buildChatContext(boxes, bobinas)
+      messages = [
+        { role: 'user', content: systemContext },
+        ...chatHistory,
+        { role: 'user', content: userMessage || '' }
+      ]
+    }
     
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -47,13 +70,8 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ]
+        max_tokens: 4000,
+        messages
       })
     })
 
@@ -68,18 +86,43 @@ export async function POST(request: NextRequest) {
     const data = await response.json()
     const aiResponse = data.content[0].text
 
-    // Parsear la respuesta JSON de Claude
-    try {
-      const jsonMatch = aiResponse.match(/```json\n?([\s\S]*?)\n?```/)
-      const jsonStr = jsonMatch ? jsonMatch[1] : aiResponse
-      const suggestions = JSON.parse(jsonStr)
-      return NextResponse.json(suggestions)
-    } catch {
-      // Si no es JSON válido, devolver como texto
-      return NextResponse.json({ 
-        analysis: aiResponse,
-        suggestions: [],
-        wasteBoxes: []
+    if (mode === 'analyze') {
+      // Parsear la respuesta JSON de la hoja de producción
+      try {
+        const jsonMatch = aiResponse.match(/```json\n?([\s\S]*?)\n?```/)
+        const jsonStr = jsonMatch ? jsonMatch[1] : aiResponse
+        const productionSheet = JSON.parse(jsonStr)
+        return NextResponse.json({
+          type: 'production_sheet',
+          ...productionSheet,
+          rawResponse: aiResponse
+        })
+      } catch {
+        return NextResponse.json({ 
+          type: 'production_sheet',
+          analysis: aiResponse,
+          productionPlan: [],
+          summary: {},
+          suggestions: []
+        })
+      }
+    } else {
+      // Modo chat: devolver respuesta de texto
+      // Intentar parsear si hay JSON en la respuesta
+      let parsedData = null
+      try {
+        const jsonMatch = aiResponse.match(/```json\n?([\s\S]*?)\n?```/)
+        if (jsonMatch) {
+          parsedData = JSON.parse(jsonMatch[1])
+        }
+      } catch {
+        // No hay JSON válido, es solo texto
+      }
+      
+      return NextResponse.json({
+        type: 'chat',
+        message: aiResponse,
+        parsedData
       })
     }
 
@@ -92,71 +135,117 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function buildOptimizationPrompt(boxes: BoxData[], bobinas: { '1.60': { usable: number }, '1.30': { usable: number } }): string {
+function buildChatContext(boxes: BoxData[], bobinas: { '1.60': { usable: number }, '1.30': { usable: number } }): string {
   const boxList = boxes.map(b => 
-    `- ${b.name}: ${b.quantity} unidades, desplegado ${b.unfoldedW}×${b.unfoldedH}mm (L${b.l}×W${b.w}×H${b.h}mm)`
+    `- ${b.name}: ${b.quantity} unidades, plancha ${b.unfoldedW}×${b.unfoldedH}mm${b.isDobleChapeton ? ' (DOBLE CHAPETÓN)' : ''}`
   ).join('\n')
 
-  return `Eres un experto en optimización de corte de cartón corrugado para fabricación de cajas.
+  return `Eres un asistente experto en producción de cajas de cartón corrugado. Ayudas a optimizar el corte y la producción.
 
-DATOS DE PRODUCCIÓN:
+CONTEXTO DE PRODUCCIÓN ACTUAL:
 ${boxList}
+
+BOBINAS DISPONIBLES:
+- Bobina 1.60m: ${bobinas['1.60'].usable}mm útiles
+- Bobina 1.30m: ${bobinas['1.30'].usable}mm útiles
+
+REGLAS:
+- Largo máximo de plancha: 2080mm
+- Máximo 2 largos diferentes por plancha
+- Cajas con doble chapetón (2P) usan 2 planchas cada una
+
+Cuando el usuario te pida modificar la hoja de producción, responde con el JSON actualizado usando el formato:
+\`\`\`json
+{
+  "productionPlan": [...],
+  "summary": {...},
+  "changes": "Descripción de los cambios realizados"
+}
+\`\`\`
+
+Sé conciso y práctico en tus respuestas.`
+}
+
+function buildProductionSheetPrompt(boxes: BoxData[], bobinas: { '1.60': { usable: number }, '1.30': { usable: number } }): string {
+  const boxList = boxes.map(b => 
+    `- ${b.name}: ${b.quantity} unidades, plancha ${b.unfoldedW}×${b.unfoldedH}mm (L${b.l}×W${b.w}×H${b.h}mm)${b.isDobleChapeton ? ' [DOBLE CHAPETÓN - 2 planchas/caja]' : ''}`
+  ).join('\n')
+
+  const totalPlanchas = boxes.reduce((sum, b) => {
+    const mult = b.isDobleChapeton ? 2 : 1
+    return sum + (b.quantity * mult)
+  }, 0)
+
+  return `Eres un experto en producción de cajas de cartón corrugado. Genera una HOJA DE PRODUCCIÓN optimizada.
+
+PEDIDO DE PRODUCCIÓN:
+${boxList}
+
+Total de planchas a producir: ${totalPlanchas}
 
 BOBINAS DISPONIBLES:
 - Bobina 1.60m: ${bobinas['1.60'].usable}mm de ancho útil
 - Bobina 1.30m: ${bobinas['1.30'].usable}mm de ancho útil
 
 LÍMITES DE MÁQUINA:
-- LARGO MÁXIMO de plancha desplegada (unfoldedW): 2080mm
-- La máquina permite hasta 2 largos de corte diferentes por plancha
+- Largo máximo de plancha: 2080mm
+- Máximo 2 largos de corte diferentes por plancha (pasada)
 
-REGLAS:
-1. Las cajas se cortan de planchas desplegadas
-2. El "alto desplegado" (unfoldedH) va en el ANCHO de la bobina (debe ser ≤ ancho útil de bobina)
-3. El "ancho desplegado" (unfoldedW) va en el LARGO de la bobina (dirección de desenrollado, máximo 2080mm)
-4. Se pueden combinar diferentes tipos de cajas si sus altos desplegados suman ≤ ancho útil de la bobina
+INSTRUCCIONES:
+1. Agrupa las cajas en "pasadas" o "tiradas" de producción
+2. Cada pasada puede combinar diferentes tipos de cajas si sus altos suman ≤ ancho útil de bobina
+3. Máximo 2 largos diferentes de corte por pasada
+4. Optimiza para minimizar desperdicio y cambios de configuración
 
-DOBLE CHAPETÓN:
-- Para cajas con largo desplegado > 2080mm, se usa "DOBLE CHAPETÓN"
-- Consiste en 2 planchas pegadas entre sí en 2 lugares
-- Cada plancha mide: (largo_total / 2) + 25mm de solapamiento
-- Ejemplo: caja 70×50×50cm tiene largo desplegado 2450mm → 2 planchas de 1250×1000mm cada una
-- Las cajas con "(2P)" en el nombre ya usan doble chapetón
-- Cada caja de doble chapetón consume 2 planchas en la producción
-
-ANALIZA Y RESPONDE EN JSON:
+RESPONDE EN JSON:
+\`\`\`json
 {
-  "analysis": "Resumen breve del análisis",
-  "bestCombinations": [
+  "analysis": "Resumen breve del análisis de producción",
+  "productionPlan": [
     {
-      "bobina": "1.60" o "1.30",
-      "boxes": [{"name": "20×20×10", "count": 3}, {"name": "30×20×15", "count": 1}],
-      "totalHeight": número en mm,
-      "wastePercent": porcentaje de desperdicio,
-      "reason": "Por qué esta combinación es óptima"
+      "pasada": 1,
+      "bobina": "1.60",
+      "largosCorte": [850, 1050],
+      "filas": [
+        {"caja": "20×20×10", "altoDesp": 300, "largoDesp": 850, "cantidad": 150, "filasEnBobina": 5},
+        {"caja": "30×20×15", "altoDesp": 350, "largoDesp": 1050, "cantidad": 100, "filasEnBobina": 4}
+      ],
+      "altosUsados": 650,
+      "sobrante": 870,
+      "desperdicio": "5.3%",
+      "metrosLineales": 42.5,
+      "notas": "Combina bien, poco desperdicio"
     }
   ],
+  "summary": {
+    "totalPasadas": 3,
+    "totalMetros160": 125.5,
+    "totalMetros130": 45.2,
+    "desperdicioPromedio": "4.8%",
+    "tiempoEstimado": "4 horas"
+  },
   "suggestions": [
     {
-      "type": "quantity_adjustment" | "combination" | "efficiency_tip",
-      "message": "Descripción de la sugerencia",
-      "impact": "Impacto estimado (ej: -15% desperdicio)"
+      "tipo": "optimizacion",
+      "mensaje": "Sugerencia de mejora",
+      "impacto": "-2% desperdicio"
     }
   ],
   "wasteBoxes": [
     {
-      "name": "Caja sugerida con sobrante",
-      "dimensions": "LxWxH en mm",
-      "unfoldedH": número en mm (debe ser ≤ al sobrante de ancho disponible),
-      "reason": "Por qué esta caja aprovecharía el sobrante",
-      "possibleUses": ["uso 1", "uso 2"]
+      "name": "Porta-lapiceros",
+      "dimensions": "80x80x100",
+      "unfoldedH": 180,
+      "cantidad": 50,
+      "reason": "Aprovecha sobrante de 200mm",
+      "possibleUses": ["oficina", "regalo"]
     }
   ]
 }
+\`\`\`
 
 IMPORTANTE:
-- El límite de largo desplegado es 2080mm. Si una caja excede este límite, sugiere reducir sus dimensiones.
-- Las cajas sugeridas para sobrante deben tener unfoldedW ≤ 2080mm.
-- Sé específico con los números y práctico con las sugerencias. 
-- Si hay sobrantes significativos (>100mm en el ancho de bobina), sugiere cajas pequeñas que podrían fabricarse con ese material (porta lapiceros, organizadores, cajas de regalo pequeñas, etc).`
+- Sé preciso con los cálculos de metros lineales
+- Los largos de corte deben ser ≤ 2080mm
+- Sugiere cajas pequeñas para aprovechar sobrantes significativos (>100mm)`
 }
