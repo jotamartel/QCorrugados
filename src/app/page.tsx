@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useMemo, useCallback } from 'react'
-import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap } from 'lucide-react'
+import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap, Lightbulb, TrendingUp, ArrowRight } from 'lucide-react'
 
 // Tipos de datos
 interface BoxType {
@@ -49,6 +49,22 @@ interface CombinedCut {
   wastePercent: number
   rows: number
   lengthM: number
+}
+
+// Sugerencia de cantidad optimizada
+interface QuantitySuggestion {
+  boxId: string
+  originalQty: number
+  suggestedQty: number
+  difference: number
+  differencePercent: number
+  reason: string
+  bobina: '1.60' | '1.30'
+  boxesPerRow: number
+  rows: number
+  wastePercent: number
+  metersNeeded: number
+  isMinimum: boolean // true si cumple el mínimo solicitado
 }
 
 // Datos de las cajas con medidas calculadas
@@ -216,6 +232,118 @@ function CombinedCutVisual({ cut }: { cut: CombinedCut }) {
   )
 }
 
+// Función para calcular sugerencias de cantidades optimizadas
+function calculateQuantitySuggestions(
+  production: ProductionItem[]
+): QuantitySuggestion[] {
+  const suggestions: QuantitySuggestion[] = []
+  
+  for (const item of production) {
+    const box = BOX_TYPES.find(b => b.id === item.boxId)
+    if (!box) continue
+    
+    const originalQty = item.quantity
+    const minAcceptable = Math.ceil(originalQty * 0.95) // -5% máximo
+    
+    // Evaluar para cada bobina
+    for (const [bobinaKey, bobina] of Object.entries(BOBINAS)) {
+      const boxesPerRow = Math.floor(bobina.usable / box.unfoldedH)
+      if (boxesPerRow === 0) continue
+      
+      const wastePercent = ((bobina.usable - (boxesPerRow * box.unfoldedH)) / bobina.usable) * 100
+      
+      // Calcular filas necesarias para el pedido original
+      const rowsForOriginal = Math.ceil(originalQty / boxesPerRow)
+      const qtyWithOriginalRows = rowsForOriginal * boxesPerRow
+      
+      // Generar sugerencias: fila actual, +1 fila, -1 fila (si cumple mínimo)
+      const rowOptions = [
+        rowsForOriginal - 1,
+        rowsForOriginal,
+        rowsForOriginal + 1,
+      ].filter(r => r > 0)
+      
+      for (const rows of rowOptions) {
+        const suggestedQty = rows * boxesPerRow
+        const difference = suggestedQty - originalQty
+        const differencePercent = (difference / originalQty) * 100
+        
+        // Solo incluir si cumple el mínimo solicitado O está dentro del -5%
+        const isMinimum = suggestedQty >= originalQty
+        const isWithinTolerance = suggestedQty >= minAcceptable
+        
+        if (!isWithinTolerance) continue
+        
+        // Determinar la razón de la sugerencia
+        let reason = ''
+        if (suggestedQty === qtyWithOriginalRows && difference === 0) {
+          reason = 'Cantidad exacta óptima'
+        } else if (suggestedQty > originalQty) {
+          reason = `+${difference} para completar fila (0% desperdicio de material)`
+        } else if (suggestedQty < originalQty) {
+          reason = `${difference} menos para fila completa (ahorro de material)`
+        } else {
+          reason = 'Cantidad ajustada a filas completas'
+        }
+        
+        suggestions.push({
+          boxId: item.boxId,
+          originalQty,
+          suggestedQty,
+          difference,
+          differencePercent,
+          reason,
+          bobina: bobinaKey as '1.60' | '1.30',
+          boxesPerRow,
+          rows,
+          wastePercent,
+          metersNeeded: (rows * box.unfoldedW) / 1000,
+          isMinimum
+        })
+      }
+    }
+  }
+  
+  // Ordenar: primero las que cumplen mínimo, luego por menor desperdicio
+  return suggestions.sort((a, b) => {
+    // Primero priorizar las que cumplen el mínimo
+    if (a.isMinimum && !b.isMinimum) return -1
+    if (!a.isMinimum && b.isMinimum) return 1
+    // Luego por menor desperdicio
+    if (a.wastePercent !== b.wastePercent) return a.wastePercent - b.wastePercent
+    // Luego por menor diferencia con el original
+    return Math.abs(a.differencePercent) - Math.abs(b.differencePercent)
+  })
+}
+
+// Función para obtener la mejor sugerencia por caja
+function getBestSuggestionPerBox(
+  suggestions: QuantitySuggestion[]
+): Map<string, QuantitySuggestion[]> {
+  const byBox = new Map<string, QuantitySuggestion[]>()
+  
+  for (const sug of suggestions) {
+    const existing = byBox.get(sug.boxId) || []
+    // Evitar duplicados exactos
+    const isDuplicate = existing.some(
+      e => e.suggestedQty === sug.suggestedQty && e.bobina === sug.bobina
+    )
+    if (!isDuplicate) {
+      existing.push(sug)
+      byBox.set(sug.boxId, existing)
+    }
+  }
+  
+  // Limitar a las 4 mejores sugerencias por caja
+  const boxIds = Array.from(byBox.keys())
+  for (const boxId of boxIds) {
+    const sugs = byBox.get(boxId) || []
+    byBox.set(boxId, sugs.slice(0, 4))
+  }
+  
+  return byBox
+}
+
 // Algoritmo de optimización combinada
 function findBestCombinations(
   production: ProductionItem[],
@@ -370,7 +498,7 @@ function findBestCombinations(
 // Componente principal
 export default function CajasProduccion() {
   const [production, setProduction] = useState<ProductionItem[]>([])
-  const [viewMode, setViewMode] = useState<'catalog' | 'production' | 'optimization' | 'combined'>('catalog')
+  const [viewMode, setViewMode] = useState<'catalog' | 'production' | 'optimization' | 'combined' | 'suggestions'>('catalog')
   const [quantities, setQuantities] = useState<Record<string, number>>({})
   const [selectedBobina, setSelectedBobina] = useState<'1.60' | '1.30' | 'auto'>('auto')
 
@@ -490,6 +618,18 @@ export default function CajasProduccion() {
     }
   }, [combinedOptimization])
 
+  // Sugerencias de cantidades optimizadas
+  const quantitySuggestions = useMemo(() => {
+    if (production.length === 0) return new Map<string, QuantitySuggestion[]>()
+    const allSuggestions = calculateQuantitySuggestions(production)
+    return getBestSuggestionPerBox(allSuggestions)
+  }, [production])
+
+  // Aplicar sugerencia
+  const applySuggestion = (suggestion: QuantitySuggestion) => {
+    updateQuantity(suggestion.boxId, suggestion.suggestedQty)
+  }
+
   return (
     <div className="min-h-screen p-4 md:p-6">
       {/* Header */}
@@ -510,6 +650,7 @@ export default function CajasProduccion() {
           {[
             { id: 'catalog', label: 'CATÁLOGO', icon: Box },
             { id: 'production', label: 'PRODUCCIÓN', icon: Layers },
+            { id: 'suggestions', label: 'SUGERENCIAS', icon: Lightbulb },
             { id: 'optimization', label: 'SIMPLE', icon: BarChart3 },
             { id: 'combined', label: 'COMBINADO', icon: Combine },
           ].map(tab => (
@@ -518,13 +659,16 @@ export default function CajasProduccion() {
               onClick={() => setViewMode(tab.id as typeof viewMode)}
               className={`btn-industrial px-3 md:px-6 py-2 md:py-3 flex items-center gap-1 md:gap-2 text-xs md:text-base ${
                 viewMode === tab.id ? 'bg-amber-700' : ''
-              }`}
+              } ${tab.id === 'suggestions' ? 'bg-yellow-600 hover:bg-yellow-500' : ''}`}
             >
               <tab.icon className="w-3 h-3 md:w-4 md:h-4" />
               <span className="hidden sm:inline">{tab.label}</span>
               <span className="sm:hidden">{tab.label.slice(0, 4)}</span>
               {tab.id === 'combined' && (
                 <span className="bg-green-500 text-white text-[10px] px-1 py-0.5 rounded hidden md:inline">2 cortes</span>
+              )}
+              {tab.id === 'suggestions' && production.length > 0 && (
+                <span className="bg-white text-yellow-700 text-[10px] px-1 py-0.5 rounded hidden md:inline">IA</span>
               )}
             </button>
           ))}
@@ -702,6 +846,175 @@ export default function CajasProduccion() {
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Vista: Sugerencias */}
+      {viewMode === 'suggestions' && (
+        <section>
+          <h2 className="font-display text-xl md:text-2xl tracking-wider text-amber-900 mb-4 flex items-center gap-2">
+            <Lightbulb className="w-5 h-5 text-yellow-500" />
+            SUGERENCIAS DE CANTIDAD
+            <span className="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded ml-2">Optimización inteligente</span>
+          </h2>
+          
+          {production.length === 0 ? (
+            <div className="bg-white/60 border-2 border-dashed border-amber-700/30 p-8 text-center">
+              <Lightbulb className="w-12 h-12 mx-auto text-amber-300 mb-4" />
+              <p className="text-amber-700">No hay producción para optimizar</p>
+              <p className="text-sm text-amber-500">Agregá cajas desde el catálogo</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Explicación */}
+              <div className="bg-yellow-50 border-2 border-yellow-300 p-4 rounded">
+                <div className="flex items-start gap-3">
+                  <Lightbulb className="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm">
+                    <p className="font-semibold text-yellow-800 mb-1">¿Cómo funcionan las sugerencias?</p>
+                    <p className="text-yellow-700">
+                      Analizamos las cantidades solicitadas y sugerimos ajustes para completar filas completas 
+                      en la bobina, minimizando el desperdicio. Las sugerencias son:
+                    </p>
+                    <ul className="mt-2 space-y-1 text-yellow-700">
+                      <li className="flex items-center gap-2">
+                        <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                        <strong>Verde:</strong> Cumple o supera la cantidad mínima solicitada
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <span className="w-2 h-2 bg-amber-500 rounded-full"></span>
+                        <strong>Amarillo:</strong> Hasta -5% del pedido (ahorra material)
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sugerencias por caja */}
+              {production.map(item => {
+                const box = BOX_TYPES.find(b => b.id === item.boxId)
+                if (!box) return null
+                
+                const suggestions = quantitySuggestions.get(item.boxId) || []
+                
+                return (
+                  <div key={item.boxId} className="bg-white/80 border-2 border-amber-700/30 p-4">
+                    <div className="flex items-center gap-4 mb-4 flex-wrap">
+                      <div className="hidden sm:block">
+                        <BoxUnfoldedVisual box={box} scale={0.08} />
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="font-display text-xl text-amber-900">{box.name}</h3>
+                        <p className="text-sm text-amber-600">
+                          Pedido actual: <strong>{item.quantity} unidades</strong>
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          Desplegado: {box.unfoldedW} × {box.unfoldedH} mm
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {suggestions.length === 0 ? (
+                      <div className="text-sm text-gray-500 italic">
+                        No hay sugerencias alternativas para esta cantidad.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-amber-700 mb-2">
+                          OPCIONES DE CANTIDAD:
+                        </div>
+                        <div className="grid gap-2">
+                          {suggestions.map((sug, idx) => (
+                            <div 
+                              key={idx}
+                              className={`p-3 rounded border-2 transition-all ${
+                                sug.isMinimum 
+                                  ? 'border-green-300 bg-green-50 hover:border-green-500' 
+                                  : 'border-amber-300 bg-amber-50 hover:border-amber-500'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between flex-wrap gap-2">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-3 h-3 rounded-full ${sug.isMinimum ? 'bg-green-500' : 'bg-amber-500'}`}></div>
+                                  <div>
+                                    <div className="font-bold text-lg">
+                                      {sug.suggestedQty} unidades
+                                      {sug.difference !== 0 && (
+                                        <span className={`ml-2 text-sm font-normal ${
+                                          sug.difference > 0 ? 'text-green-600' : 'text-amber-600'
+                                        }`}>
+                                          ({sug.difference > 0 ? '+' : ''}{sug.difference})
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-gray-600">{sug.reason}</div>
+                                  </div>
+                                </div>
+                                
+                                <div className="flex items-center gap-4">
+                                  <div className="text-right text-xs">
+                                    <div className="text-gray-600">Bobina {sug.bobina}m</div>
+                                    <div><strong>{sug.boxesPerRow}</strong> cajas/fila × <strong>{sug.rows}</strong> filas</div>
+                                    <div className={sug.wastePercent < 10 ? 'text-green-600 font-semibold' : 'text-amber-600'}>
+                                      {sug.wastePercent.toFixed(1)}% desperdicio
+                                    </div>
+                                    <div className="text-gray-500">{sug.metersNeeded.toFixed(2)}m lineales</div>
+                                  </div>
+                                  
+                                  <button
+                                    onClick={() => applySuggestion(sug)}
+                                    className={`px-4 py-2 rounded font-display tracking-wider text-sm flex items-center gap-1 ${
+                                      sug.isMinimum
+                                        ? 'bg-green-600 text-white hover:bg-green-500'
+                                        : 'bg-amber-600 text-white hover:bg-amber-500'
+                                    }`}
+                                  >
+                                    APLICAR
+                                    <ArrowRight className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+              
+              {/* Resumen de optimización potencial */}
+              <div className="bg-gradient-to-br from-yellow-500 to-yellow-700 text-white p-4 rounded">
+                <div className="font-display text-lg tracking-wider mb-2 flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5" />
+                  CONSEJO
+                </div>
+                <p className="text-sm text-yellow-100">
+                  Ajustar las cantidades a filas completas puede ahorrar hasta un 20% de material. 
+                  Las sugerencias en <strong>verde</strong> cumplen con tu pedido mínimo, 
+                  las <strong>amarillas</strong> sacrifican hasta un 5% de cantidad por mayor eficiencia.
+                </p>
+              </div>
+              
+              {/* Botón para ir a optimización */}
+              <div className="flex gap-3 justify-center mt-4">
+                <button 
+                  onClick={() => setViewMode('optimization')} 
+                  className="btn-industrial px-6 py-2 flex items-center gap-2"
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  VER OPTIMIZACIÓN SIMPLE
+                </button>
+                <button 
+                  onClick={() => setViewMode('combined')} 
+                  className="btn-industrial bg-green-600 px-6 py-2 flex items-center gap-2"
+                >
+                  <Combine className="w-4 h-4" />
+                  VER COMBINADO
+                </button>
               </div>
             </div>
           )}
