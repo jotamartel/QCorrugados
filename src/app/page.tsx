@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useMemo, useCallback } from 'react'
-import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap, Lightbulb, TrendingUp, ArrowRight } from 'lucide-react'
+import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap, Lightbulb, TrendingUp, ArrowRight, Plus, Trash2, Sparkles, Bot, Settings, X, Loader2 } from 'lucide-react'
 
 // Tipos de datos
 interface BoxType {
@@ -12,6 +12,7 @@ interface BoxType {
   h: number
   unfoldedW: number // largo de la plancha (dirección de la bobina)
   unfoldedH: number // alto de la plancha (ancho de la bobina)
+  isCustom?: boolean
 }
 
 interface ProductionItem {
@@ -67,8 +68,32 @@ interface QuantitySuggestion {
   isMinimum: boolean // true si cumple el mínimo solicitado
 }
 
+// Respuesta de la IA
+interface AIResponse {
+  analysis: string
+  bestCombinations?: {
+    bobina: string
+    boxes: { name: string; count: number }[]
+    totalHeight: number
+    wastePercent: number
+    reason: string
+  }[]
+  suggestions?: {
+    type: string
+    message: string
+    impact: string
+  }[]
+  wasteBoxes?: {
+    name: string
+    dimensions: string
+    unfoldedH: number
+    reason: string
+    possibleUses: string[]
+  }[]
+}
+
 // Datos de las cajas con medidas calculadas
-const BOX_TYPES: BoxType[] = [
+const DEFAULT_BOX_TYPES: BoxType[] = [
   { id: '20x20x10', name: '20×20×10', l: 20, w: 20, h: 10, unfoldedW: 850, unfoldedH: 300 },
   { id: '20x20x20', name: '20×20×20', l: 20, w: 20, h: 20, unfoldedW: 850, unfoldedH: 400 },
   { id: '30x20x15', name: '30×20×15', l: 30, w: 20, h: 15, unfoldedW: 1050, unfoldedH: 350 },
@@ -91,6 +116,16 @@ const COLORS = [
   '#d4a574', '#8b6914', '#cd853f', '#daa520', '#a0522d',
   '#bc8f8f', '#d2691e', '#b8860b', '#c49a6c', '#f4a460'
 ]
+
+// Función para calcular medidas desplegadas RSC
+function calculateUnfolded(l: number, w: number, h: number): { unfoldedW: number; unfoldedH: number } {
+  // Fórmula RSC (Regular Slotted Container):
+  // Ancho desplegado = 2L + 2W + 50mm (solapa pegue)
+  // Alto desplegado = H + W (solapas + cuerpo)
+  const unfoldedW = (2 * l + 2 * w) * 10 + 50 // convertir cm a mm y agregar solapa
+  const unfoldedH = (h + w) * 10 // convertir cm a mm
+  return { unfoldedW, unfoldedH }
+}
 
 // Componente para visualizar caja desplegada
 function BoxUnfoldedVisual({ box, scale = 0.15, color }: { box: BoxType; scale?: number; color?: string }) {
@@ -234,12 +269,13 @@ function CombinedCutVisual({ cut }: { cut: CombinedCut }) {
 
 // Función para calcular sugerencias de cantidades optimizadas
 function calculateQuantitySuggestions(
-  production: ProductionItem[]
+  production: ProductionItem[],
+  boxTypes: BoxType[]
 ): QuantitySuggestion[] {
   const suggestions: QuantitySuggestion[] = []
   
   for (const item of production) {
-    const box = BOX_TYPES.find(b => b.id === item.boxId)
+    const box = boxTypes.find(b => b.id === item.boxId)
     if (!box) continue
     
     const originalQty = item.quantity
@@ -347,7 +383,8 @@ function getBestSuggestionPerBox(
 // Algoritmo de optimización combinada
 function findBestCombinations(
   production: ProductionItem[],
-  bobinaKey: '1.60' | '1.30'
+  bobinaKey: '1.60' | '1.30',
+  boxTypes: BoxType[]
 ): CombinedCut[] {
   const bobina = BOBINAS[bobinaKey]
   const results: CombinedCut[] = []
@@ -356,7 +393,7 @@ function findBestCombinations(
   production.forEach(p => pending.set(p.boxId, p.quantity))
   
   const getBoxesWithPending = () => {
-    return BOX_TYPES.filter(b => (pending.get(b.id) || 0) > 0)
+    return boxTypes.filter(b => (pending.get(b.id) || 0) > 0)
   }
   
   function generateCombinations(
@@ -498,9 +535,134 @@ function findBestCombinations(
 // Componente principal
 export default function CajasProduccion() {
   const [production, setProduction] = useState<ProductionItem[]>([])
-  const [viewMode, setViewMode] = useState<'catalog' | 'production' | 'optimization' | 'combined' | 'suggestions'>('catalog')
+  const [viewMode, setViewMode] = useState<'catalog' | 'production' | 'optimization' | 'combined' | 'suggestions' | 'ai'>('catalog')
   const [quantities, setQuantities] = useState<Record<string, number>>({})
   const [selectedBobina, setSelectedBobina] = useState<'1.60' | '1.30' | 'auto'>('auto')
+  
+  // Cajas personalizadas
+  const [customBoxes, setCustomBoxes] = useState<BoxType[]>([])
+  const [showCustomForm, setShowCustomForm] = useState(false)
+  const [customForm, setCustomForm] = useState({ l: '', w: '', h: '', quantity: '' })
+  
+  // IA
+  const [apiKey, setApiKey] = useState('')
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false)
+  const [aiResponse, setAiResponse] = useState<AIResponse | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+  
+  // Combinar cajas default + custom
+  const BOX_TYPES = useMemo(() => [...DEFAULT_BOX_TYPES, ...customBoxes], [customBoxes])
+
+  // Agregar caja personalizada
+  const addCustomBox = () => {
+    const l = parseInt(customForm.l)
+    const w = parseInt(customForm.w)
+    const h = parseInt(customForm.h)
+    const qty = parseInt(customForm.quantity) || 0
+    
+    if (l > 0 && w > 0 && h > 0) {
+      const { unfoldedW, unfoldedH } = calculateUnfolded(l, w, h)
+      const id = `custom-${l}x${w}x${h}-${Date.now()}`
+      const newBox: BoxType = {
+        id,
+        name: `${l}×${w}×${h}`,
+        l, w, h,
+        unfoldedW,
+        unfoldedH,
+        isCustom: true
+      }
+      setCustomBoxes(prev => [...prev, newBox])
+      
+      // Si hay cantidad, agregar a producción
+      if (qty > 0) {
+        setProduction(prev => [...prev, { boxId: id, quantity: qty }])
+      }
+      
+      setCustomForm({ l: '', w: '', h: '', quantity: '' })
+      setShowCustomForm(false)
+    }
+  }
+  
+  // Eliminar caja personalizada
+  const removeCustomBox = (boxId: string) => {
+    setCustomBoxes(prev => prev.filter(b => b.id !== boxId))
+    setProduction(prev => prev.filter(p => p.boxId !== boxId))
+  }
+  
+  // Consultar IA
+  const consultAI = async () => {
+    if (!apiKey) {
+      setShowApiKeyModal(true)
+      return
+    }
+    
+    setAiLoading(true)
+    setAiError(null)
+    setAiResponse(null)
+    
+    try {
+      const boxesData = production.map(item => {
+        const box = BOX_TYPES.find(b => b.id === item.boxId)!
+        return {
+          id: box.id,
+          name: box.name,
+          l: box.l,
+          w: box.w,
+          h: box.h,
+          unfoldedW: box.unfoldedW,
+          unfoldedH: box.unfoldedH,
+          quantity: item.quantity
+        }
+      })
+      
+      const response = await fetch('/api/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          boxes: boxesData,
+          bobinas: BOBINAS,
+          apiKey
+        })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Error al consultar IA')
+      }
+      
+      const data = await response.json()
+      setAiResponse(data)
+      setViewMode('ai')
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Error desconocido')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+  
+  // Agregar caja sugerida por IA a custom boxes
+  const addAISuggestedBox = (dimensions: string, unfoldedH: number) => {
+    const parts = dimensions.toLowerCase().replace(/\s/g, '').split('x')
+    if (parts.length === 3) {
+      const l = parseInt(parts[0])
+      const w = parseInt(parts[1])
+      const h = parseInt(parts[2])
+      if (l > 0 && w > 0 && h > 0) {
+        const { unfoldedW } = calculateUnfolded(l, w, h)
+        const id = `ai-${l}x${w}x${h}-${Date.now()}`
+        const newBox: BoxType = {
+          id,
+          name: `${l}×${w}×${h} (IA)`,
+          l, w, h,
+          unfoldedW,
+          unfoldedH: unfoldedH || (h + w) * 10,
+          isCustom: true
+        }
+        setCustomBoxes(prev => [...prev, newBox])
+      }
+    }
+  }
 
   const setCatalogQty = useCallback((boxId: string, qty: number) => {
     setQuantities(prev => ({ ...prev, [boxId]: qty }))
@@ -564,8 +726,8 @@ export default function CajasProduccion() {
   const combinedOptimization = useMemo(() => {
     if (production.length === 0) return { '1.60': [], '1.30': [], best: [] }
     
-    const result160 = findBestCombinations(production, '1.60')
-    const result130 = findBestCombinations(production, '1.30')
+    const result160 = findBestCombinations(production, '1.60', BOX_TYPES)
+    const result130 = findBestCombinations(production, '1.30', BOX_TYPES)
     
     const totalWaste160 = result160.reduce((sum, c) => sum + c.wastePercent * c.rows, 0)
     const totalWaste130 = result130.reduce((sum, c) => sum + c.wastePercent * c.rows, 0)
@@ -575,7 +737,7 @@ export default function CajasProduccion() {
       : selectedBobina === '1.60' ? result160 : result130
     
     return { '1.60': result160, '1.30': result130, best }
-  }, [production, selectedBobina])
+  }, [production, selectedBobina, BOX_TYPES])
 
   // Totales simple
   const simpleTotals = useMemo(() => {
@@ -621,9 +783,9 @@ export default function CajasProduccion() {
   // Sugerencias de cantidades optimizadas
   const quantitySuggestions = useMemo(() => {
     if (production.length === 0) return new Map<string, QuantitySuggestion[]>()
-    const allSuggestions = calculateQuantitySuggestions(production)
+    const allSuggestions = calculateQuantitySuggestions(production, BOX_TYPES)
     return getBestSuggestionPerBox(allSuggestions)
-  }, [production])
+  }, [production, BOX_TYPES])
 
   // Aplicar sugerencia
   const applySuggestion = (suggestion: QuantitySuggestion) => {
@@ -653,13 +815,14 @@ export default function CajasProduccion() {
             { id: 'suggestions', label: 'SUGERENCIAS', icon: Lightbulb },
             { id: 'optimization', label: 'SIMPLE', icon: BarChart3 },
             { id: 'combined', label: 'COMBINADO', icon: Combine },
+            { id: 'ai', label: 'IA', icon: Sparkles },
           ].map(tab => (
             <button
               key={tab.id}
               onClick={() => setViewMode(tab.id as typeof viewMode)}
               className={`btn-industrial px-3 md:px-6 py-2 md:py-3 flex items-center gap-1 md:gap-2 text-xs md:text-base ${
                 viewMode === tab.id ? 'bg-amber-700' : ''
-              } ${tab.id === 'suggestions' ? 'bg-yellow-600 hover:bg-yellow-500' : ''}`}
+              } ${tab.id === 'suggestions' ? 'bg-yellow-600 hover:bg-yellow-500' : ''} ${tab.id === 'ai' ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500' : ''}`}
             >
               <tab.icon className="w-3 h-3 md:w-4 md:h-4" />
               <span className="hidden sm:inline">{tab.label}</span>
@@ -670,10 +833,67 @@ export default function CajasProduccion() {
               {tab.id === 'suggestions' && production.length > 0 && (
                 <span className="bg-white text-yellow-700 text-[10px] px-1 py-0.5 rounded hidden md:inline">IA</span>
               )}
+              {tab.id === 'ai' && (
+                <span className="bg-white text-purple-700 text-[10px] px-1 py-0.5 rounded hidden md:inline">Claude</span>
+              )}
             </button>
           ))}
+          
+          {/* Botón configurar API */}
+          <button
+            onClick={() => setShowApiKeyModal(true)}
+            className="btn-industrial px-3 py-2 flex items-center gap-1 bg-gray-600 hover:bg-gray-500 text-xs"
+            title="Configurar API Key"
+          >
+            <Settings className="w-3 h-3" />
+          </button>
         </nav>
       </header>
+
+      {/* Modal API Key */}
+      {showApiKeyModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-display text-xl text-amber-900 flex items-center gap-2">
+                <Bot className="w-5 h-5" />
+                Configurar API de Claude
+              </h3>
+              <button onClick={() => setShowApiKeyModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              Ingresá tu API Key de Anthropic para usar las sugerencias de IA. 
+              Podés obtenerla en <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" className="text-purple-600 underline">console.anthropic.com</a>
+            </p>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-ant-api..."
+              className="w-full border-2 border-gray-300 rounded px-3 py-2 mb-4 font-mono text-sm"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowApiKeyModal(false)}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  setShowApiKeyModal(false)
+                  if (production.length > 0) consultAI()
+                }}
+                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-500"
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Info de bobinas */}
       <div className="bg-white/60 border-2 border-amber-700/30 p-3 md:p-4 mb-4 md:mb-6 flex gap-4 md:gap-8 flex-wrap">
@@ -707,8 +927,191 @@ export default function CajasProduccion() {
             CATÁLOGO DE CAJAS
           </h2>
           
+          {/* Formulario caja personalizada */}
+          <div className="mb-6">
+            {!showCustomForm ? (
+              <button
+                onClick={() => setShowCustomForm(true)}
+                className="w-full border-2 border-dashed border-purple-400 bg-purple-50 hover:bg-purple-100 p-4 rounded-lg flex items-center justify-center gap-2 text-purple-700 transition-colors"
+              >
+                <Plus className="w-5 h-5" />
+                <span className="font-display tracking-wider">AGREGAR CAJA PERSONALIZADA</span>
+              </button>
+            ) : (
+              <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-4 rounded-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-display text-lg text-purple-800 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4" />
+                    Nueva Caja Personalizada
+                  </h3>
+                  <button onClick={() => setShowCustomForm(false)} className="text-gray-500 hover:text-gray-700">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                  <div>
+                    <label className="text-xs text-purple-600 font-semibold">LARGO (cm)</label>
+                    <input
+                      type="number"
+                      value={customForm.l}
+                      onChange={(e) => setCustomForm(prev => ({ ...prev, l: e.target.value }))}
+                      placeholder="L"
+                      className="w-full border-2 border-purple-300 rounded px-3 py-2 mt-1"
+                      min="1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-purple-600 font-semibold">ANCHO (cm)</label>
+                    <input
+                      type="number"
+                      value={customForm.w}
+                      onChange={(e) => setCustomForm(prev => ({ ...prev, w: e.target.value }))}
+                      placeholder="W"
+                      className="w-full border-2 border-purple-300 rounded px-3 py-2 mt-1"
+                      min="1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-purple-600 font-semibold">ALTO (cm)</label>
+                    <input
+                      type="number"
+                      value={customForm.h}
+                      onChange={(e) => setCustomForm(prev => ({ ...prev, h: e.target.value }))}
+                      placeholder="H"
+                      className="w-full border-2 border-purple-300 rounded px-3 py-2 mt-1"
+                      min="1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-purple-600 font-semibold">CANTIDAD</label>
+                    <input
+                      type="number"
+                      value={customForm.quantity}
+                      onChange={(e) => setCustomForm(prev => ({ ...prev, quantity: e.target.value }))}
+                      placeholder="Opc."
+                      className="w-full border-2 border-purple-300 rounded px-3 py-2 mt-1"
+                      min="0"
+                    />
+                  </div>
+                </div>
+                
+                {/* Preview de medidas calculadas */}
+                {customForm.l && customForm.w && customForm.h && (
+                  <div className="bg-white/50 rounded p-2 mb-3 text-sm">
+                    <span className="text-purple-600">Desplegado RSC: </span>
+                    <strong>
+                      {(2 * parseInt(customForm.l) + 2 * parseInt(customForm.w)) * 10 + 50} × {(parseInt(customForm.h) + parseInt(customForm.w)) * 10} mm
+                    </strong>
+                  </div>
+                )}
+                
+                <button
+                  onClick={addCustomBox}
+                  disabled={!customForm.l || !customForm.w || !customForm.h}
+                  className="w-full bg-purple-600 text-white py-2 rounded font-display tracking-wider hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <Check className="w-4 h-4" />
+                  AGREGAR AL CATÁLOGO
+                </button>
+              </div>
+            )}
+          </div>
+          
+          {/* Cajas personalizadas existentes */}
+          {customBoxes.length > 0 && (
+            <div className="mb-6">
+              <h3 className="font-display text-lg text-purple-700 mb-3 flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                CAJAS PERSONALIZADAS ({customBoxes.length})
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {customBoxes.map(box => {
+                  const qty = quantities[box.id] || 0
+                  const inProduction = production.find(p => p.boxId === box.id)
+                  const fit160 = Math.floor(BOBINAS['1.60'].usable / box.unfoldedH)
+                  const fit130 = Math.floor(BOBINAS['1.30'].usable / box.unfoldedH)
+                  const waste160 = ((BOBINAS['1.60'].usable - (fit160 * box.unfoldedH)) / BOBINAS['1.60'].usable * 100).toFixed(1)
+                  const waste130 = ((BOBINAS['1.30'].usable - (fit130 * box.unfoldedH)) / BOBINAS['1.30'].usable * 100).toFixed(1)
+                  
+                  return (
+                    <div 
+                      key={box.id}
+                      className={`bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-3 transition-all ${inProduction ? 'ring-2 ring-green-500/50' : ''}`}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h3 className="font-display text-lg text-purple-800">{box.name}</h3>
+                          <p className="text-xs text-purple-600">
+                            {box.unfoldedW} × {box.unfoldedH} mm
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {inProduction && (
+                            <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded">
+                              {inProduction.quantity}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => removeCustomBox(box.id)}
+                            className="text-red-500 hover:text-red-700 p-1"
+                            title="Eliminar caja"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      
+                      <div className="flex justify-center mb-2">
+                        <BoxUnfoldedVisual box={box} scale={0.1} />
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-1 text-xs mb-2">
+                        <div className={`p-1.5 rounded ${parseFloat(waste160) < parseFloat(waste130) ? 'bg-green-100' : 'bg-white/50'}`}>
+                          <div className="font-semibold">1.60m</div>
+                          <div>{fit160}/fila • {waste160}%</div>
+                        </div>
+                        <div className={`p-1.5 rounded ${parseFloat(waste130) < parseFloat(waste160) ? 'bg-green-100' : 'bg-white/50'}`}>
+                          <div className="font-semibold">1.30m</div>
+                          <div>{fit130}/fila • {waste130}%</div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex gap-1">
+                        <input
+                          type="number"
+                          min="0"
+                          value={qty || ''}
+                          onChange={(e) => setCatalogQty(box.id, parseInt(e.target.value) || 0)}
+                          placeholder="Cant."
+                          className="input-industrial flex-1 px-2 py-1.5 text-sm w-20 border-purple-300"
+                        />
+                        <button
+                          onClick={() => {
+                            addToProduction(box.id, qty)
+                            setCatalogQty(box.id, 0)
+                          }}
+                          className="bg-purple-600 text-white px-3 py-1.5 text-xs rounded hover:bg-purple-500"
+                          disabled={qty <= 0}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          
+          {/* Título cajas estándar */}
+          <h3 className="font-display text-lg text-amber-700 mb-3 flex items-center gap-2">
+            <Box className="w-4 h-4" />
+            CAJAS ESTÁNDAR ({DEFAULT_BOX_TYPES.length})
+          </h3>
+          
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
-            {BOX_TYPES.map(box => {
+            {DEFAULT_BOX_TYPES.map(box => {
               const qty = quantities[box.id] || 0
               const inProduction = production.find(p => p.boxId === box.id)
               const fit160 = Math.floor(BOBINAS['1.60'].usable / box.unfoldedH)
@@ -1227,6 +1630,201 @@ export default function CajasProduccion() {
                     ¡Ahorrás {((simpleTotals['1.60'].length + simpleTotals['1.30'].length) - combinedTotals.length).toFixed(1)}m de material!
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+      
+      {/* Vista: IA */}
+      {viewMode === 'ai' && (
+        <section>
+          <h2 className="font-display text-xl md:text-2xl tracking-wider text-amber-900 mb-4 flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-purple-600" />
+            ASISTENTE IA
+            <span className="bg-gradient-to-r from-purple-600 to-pink-600 text-white text-xs px-2 py-0.5 rounded">Claude</span>
+          </h2>
+          
+          {production.length === 0 ? (
+            <div className="bg-white/60 border-2 border-dashed border-purple-300 p-8 text-center">
+              <Bot className="w-12 h-12 mx-auto text-purple-300 mb-4" />
+              <p className="text-purple-700">No hay producción para analizar</p>
+              <p className="text-sm text-purple-500">Agregá cajas desde el catálogo</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Botón consultar IA */}
+              <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-6 rounded-lg">
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div>
+                    <h3 className="font-display text-lg text-purple-800 mb-1">Consultar IA</h3>
+                    <p className="text-sm text-purple-600">
+                      Claude analizará tu producción y te dará sugerencias para optimizar combinaciones 
+                      y aprovechar material sobrante.
+                    </p>
+                  </div>
+                  <button
+                    onClick={consultAI}
+                    disabled={aiLoading || !apiKey}
+                    className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-lg font-display tracking-wider hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {aiLoading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Analizando...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-5 h-5" />
+                        ANALIZAR CON IA
+                      </>
+                    )}
+                  </button>
+                </div>
+                
+                {!apiKey && (
+                  <div className="mt-4 bg-amber-100 text-amber-700 px-3 py-2 rounded text-sm flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    Configurá tu API Key de Anthropic para usar esta función
+                    <button onClick={() => setShowApiKeyModal(true)} className="underline ml-1">Configurar</button>
+                  </div>
+                )}
+              </div>
+              
+              {/* Error */}
+              {aiError && (
+                <div className="bg-red-50 border-2 border-red-300 p-4 rounded-lg text-red-700">
+                  <div className="flex items-center gap-2 font-semibold mb-1">
+                    <AlertTriangle className="w-4 h-4" />
+                    Error
+                  </div>
+                  <p className="text-sm">{aiError}</p>
+                </div>
+              )}
+              
+              {/* Respuesta de IA */}
+              {aiResponse && (
+                <div className="space-y-4">
+                  {/* Análisis */}
+                  <div className="bg-white border-2 border-purple-200 p-4 rounded-lg">
+                    <h3 className="font-display text-lg text-purple-800 mb-2 flex items-center gap-2">
+                      <Bot className="w-5 h-5" />
+                      Análisis
+                    </h3>
+                    <p className="text-gray-700">{aiResponse.analysis}</p>
+                  </div>
+                  
+                  {/* Mejores combinaciones */}
+                  {aiResponse.bestCombinations && aiResponse.bestCombinations.length > 0 && (
+                    <div className="bg-white border-2 border-green-200 p-4 rounded-lg">
+                      <h3 className="font-display text-lg text-green-800 mb-3 flex items-center gap-2">
+                        <Combine className="w-5 h-5" />
+                        Mejores Combinaciones
+                      </h3>
+                      <div className="space-y-3">
+                        {aiResponse.bestCombinations.map((comb, idx) => (
+                          <div key={idx} className="bg-green-50 p-3 rounded">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded">Bobina {comb.bobina}m</span>
+                              <span className={`text-sm ${comb.wastePercent < 10 ? 'text-green-600' : 'text-amber-600'}`}>
+                                {comb.wastePercent.toFixed(1)}% desperdicio
+                              </span>
+                            </div>
+                            <div className="text-sm mb-1">
+                              {comb.boxes.map((b, i) => (
+                                <span key={i} className="inline-block bg-white px-2 py-0.5 rounded mr-1 mb-1">
+                                  {b.count}× {b.name}
+                                </span>
+                              ))}
+                            </div>
+                            <p className="text-xs text-gray-600">{comb.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Sugerencias */}
+                  {aiResponse.suggestions && aiResponse.suggestions.length > 0 && (
+                    <div className="bg-white border-2 border-yellow-200 p-4 rounded-lg">
+                      <h3 className="font-display text-lg text-yellow-800 mb-3 flex items-center gap-2">
+                        <Lightbulb className="w-5 h-5" />
+                        Sugerencias
+                      </h3>
+                      <div className="space-y-2">
+                        {aiResponse.suggestions.map((sug, idx) => (
+                          <div key={idx} className="bg-yellow-50 p-3 rounded flex items-start gap-3">
+                            <div className="flex-shrink-0">
+                              {sug.type === 'quantity_adjustment' && <Calculator className="w-5 h-5 text-yellow-600" />}
+                              {sug.type === 'combination' && <Combine className="w-5 h-5 text-yellow-600" />}
+                              {sug.type === 'efficiency_tip' && <TrendingUp className="w-5 h-5 text-yellow-600" />}
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm text-gray-700">{sug.message}</p>
+                              <p className="text-xs text-yellow-600 mt-1 font-semibold">{sug.impact}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Cajas para sobrante */}
+                  {aiResponse.wasteBoxes && aiResponse.wasteBoxes.length > 0 && (
+                    <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-4 rounded-lg">
+                      <h3 className="font-display text-lg text-purple-800 mb-3 flex items-center gap-2">
+                        <Sparkles className="w-5 h-5" />
+                        Cajas Sugeridas para el Sobrante
+                      </h3>
+                      <p className="text-sm text-purple-600 mb-3">
+                        Estas cajas podrían fabricarse con el material sobrante de las combinaciones:
+                      </p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {aiResponse.wasteBoxes.map((box, idx) => (
+                          <div key={idx} className="bg-white p-3 rounded-lg">
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <h4 className="font-semibold text-purple-800">{box.name}</h4>
+                                <p className="text-xs text-gray-600">{box.dimensions} cm</p>
+                                <p className="text-xs text-purple-500">Alto desplegado: {box.unfoldedH}mm</p>
+                              </div>
+                              <button
+                                onClick={() => addAISuggestedBox(box.dimensions, box.unfoldedH)}
+                                className="bg-purple-600 text-white px-3 py-1 rounded text-xs hover:bg-purple-500 flex items-center gap-1"
+                              >
+                                <Plus className="w-3 h-3" />
+                                Agregar
+                              </button>
+                            </div>
+                            <p className="text-xs text-gray-600 mb-2">{box.reason}</p>
+                            <div className="flex flex-wrap gap-1">
+                              {box.possibleUses.map((use, i) => (
+                                <span key={i} className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded">
+                                  {use}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Producción actual para referencia */}
+              <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
+                <h4 className="text-sm font-semibold text-gray-600 mb-2">Producción actual analizada:</h4>
+                <div className="flex flex-wrap gap-2">
+                  {production.map(item => {
+                    const box = BOX_TYPES.find(b => b.id === item.boxId)
+                    return box ? (
+                      <span key={item.boxId} className="bg-white border px-2 py-1 rounded text-sm">
+                        {item.quantity}× {box.name}
+                      </span>
+                    ) : null
+                  })}
+                </div>
               </div>
             </div>
           )}
