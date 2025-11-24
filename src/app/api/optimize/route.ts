@@ -115,7 +115,14 @@ REGLAS:
 2. El "alto desplegado" (unfoldedH) va en el ANCHO de la bobina (debe ser ≤ ancho útil de bobina)
 3. El "ancho desplegado" (unfoldedW) va en el LARGO de la bobina (dirección de desenrollado, máximo 2080mm)
 4. Se pueden combinar diferentes tipos de cajas si sus altos desplegados suman ≤ ancho útil de la bobina
-5. Si una caja tiene unfoldedW > 2080mm, NO se puede fabricar y debe reducirse
+
+DOBLE CHAPETÓN:
+- Para cajas con largo desplegado > 2080mm, se usa "DOBLE CHAPETÓN"
+- Consiste en 2 planchas pegadas entre sí en 2 lugares
+- Cada plancha mide: (largo_total / 2) + 25mm de solapamiento
+- Ejemplo: caja 70×50×50cm tiene largo desplegado 2450mm → 2 planchas de 1250×1000mm cada una
+- Las cajas con "(2P)" en el nombre ya usan doble chapetón
+- Cada caja de doble chapetón consume 2 planchas en la producción
 
 ANALIZA Y RESPONDE EN JSON:
 {
