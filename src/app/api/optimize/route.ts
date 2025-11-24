@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
 
 function buildOptimizationPrompt(boxes: BoxData[], bobinas: { '1.60': { usable: number }, '1.30': { usable: number } }): string {
   const boxList = boxes.map(b => 
-    `- ${b.name}: ${b.quantity} unidades, desplegado ${b.unfoldedW}×${b.unfoldedH}mm (L${b.l}×W${b.w}×H${b.h}cm)`
+    `- ${b.name}: ${b.quantity} unidades, desplegado ${b.unfoldedW}×${b.unfoldedH}mm (L${b.l}×W${b.w}×H${b.h}mm)`
   ).join('\n')
 
   return `Eres un experto en optimización de corte de cartón corrugado para fabricación de cajas.
@@ -106,12 +106,16 @@ BOBINAS DISPONIBLES:
 - Bobina 1.60m: ${bobinas['1.60'].usable}mm de ancho útil
 - Bobina 1.30m: ${bobinas['1.30'].usable}mm de ancho útil
 
+LÍMITES DE MÁQUINA:
+- LARGO MÁXIMO de plancha desplegada (unfoldedW): 2080mm
+- La máquina permite hasta 2 largos de corte diferentes por plancha
+
 REGLAS:
 1. Las cajas se cortan de planchas desplegadas
-2. El "alto desplegado" (unfoldedH) va en el ANCHO de la bobina
-3. El "ancho desplegado" (unfoldedW) va en el LARGO de la bobina (dirección de desenrollado)
-4. La máquina permite hasta 2 largos de corte diferentes por plancha
-5. Se pueden combinar diferentes tipos de cajas si sus altos desplegados suman ≤ ancho útil de la bobina
+2. El "alto desplegado" (unfoldedH) va en el ANCHO de la bobina (debe ser ≤ ancho útil de bobina)
+3. El "ancho desplegado" (unfoldedW) va en el LARGO de la bobina (dirección de desenrollado, máximo 2080mm)
+4. Se pueden combinar diferentes tipos de cajas si sus altos desplegados suman ≤ ancho útil de la bobina
+5. Si una caja tiene unfoldedW > 2080mm, NO se puede fabricar y debe reducirse
 
 ANALIZA Y RESPONDE EN JSON:
 {
@@ -135,13 +139,17 @@ ANALIZA Y RESPONDE EN JSON:
   "wasteBoxes": [
     {
       "name": "Caja sugerida con sobrante",
-      "dimensions": "LxWxH en cm",
-      "unfoldedH": número en mm,
+      "dimensions": "LxWxH en mm",
+      "unfoldedH": número en mm (debe ser ≤ al sobrante de ancho disponible),
       "reason": "Por qué esta caja aprovecharía el sobrante",
       "possibleUses": ["uso 1", "uso 2"]
     }
   ]
 }
 
-Sé específico con los números y práctico con las sugerencias. Si hay sobrantes significativos (>100mm), sugiere cajas pequeñas que podrían fabricarse con ese material (porta lapiceros, organizadores, cajas de regalo pequeñas, etc).`
+IMPORTANTE:
+- El límite de largo desplegado es 2080mm. Si una caja excede este límite, sugiere reducir sus dimensiones.
+- Las cajas sugeridas para sobrante deben tener unfoldedW ≤ 2080mm.
+- Sé específico con los números y práctico con las sugerencias. 
+- Si hay sobrantes significativos (>100mm en el ancho de bobina), sugiere cajas pequeñas que podrían fabricarse con ese material (porta lapiceros, organizadores, cajas de regalo pequeñas, etc).`
 }
