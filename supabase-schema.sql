@@ -164,22 +164,39 @@ SELECT
 FROM orders o
 JOIN profiles p ON o.client_id = p.id;
 
--- Vista de análisis de clientes
+-- Vista de análisis de clientes (corregida con CTE)
 CREATE VIEW client_analytics AS
+WITH order_diffs AS (
+  SELECT 
+    o.client_id,
+    o.created_at,
+    EXTRACT(EPOCH FROM (o.created_at - LAG(o.created_at) OVER (PARTITION BY o.client_id ORDER BY o.created_at))) / 86400.0 AS days_since_prev
+  FROM orders o
+  WHERE o.status != 'cancelled'
+),
+client_order_stats AS (
+  SELECT 
+    client_id,
+    ROUND(AVG(days_since_prev))::INTEGER AS avg_days_between_orders
+  FROM order_diffs
+  WHERE days_since_prev IS NOT NULL
+  GROUP BY client_id
+)
 SELECT 
   p.id as client_id,
   p.full_name,
   p.company_name,
   p.email,
   COUNT(DISTINCT o.id) as total_orders,
-  SUM(o.total_boxes) as total_boxes_ordered,
+  COALESCE(SUM(o.total_boxes), 0) as total_boxes_ordered,
   MAX(o.created_at) as last_order_date,
   MIN(o.created_at) as first_order_date,
-  AVG(EXTRACT(EPOCH FROM (o.created_at - LAG(o.created_at) OVER (PARTITION BY o.client_id ORDER BY o.created_at))) / 86400)::INTEGER as avg_days_between_orders
+  cos.avg_days_between_orders
 FROM profiles p
 LEFT JOIN orders o ON p.id = o.client_id AND o.status != 'cancelled'
+LEFT JOIN client_order_stats cos ON p.id = cos.client_id
 WHERE p.role = 'client'
-GROUP BY p.id, p.full_name, p.company_name, p.email;
+GROUP BY p.id, p.full_name, p.company_name, p.email, cos.avg_days_between_orders;
 
 -- =====================================================
 -- FUNCIONES

@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
-import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap, Lightbulb, TrendingUp, ArrowRight, Plus, Trash2, Sparkles, Bot, Settings, X, Loader2 } from 'lucide-react'
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
+import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap, Lightbulb, TrendingUp, ArrowRight, Plus, Trash2, Sparkles, Bot, Settings, X, Loader2, ShoppingCart, ChevronRight, Send, MessageCircle, FileText, Clock, Ruler } from 'lucide-react'
 
 // Tipos de datos
 interface BoxType {
@@ -70,9 +70,53 @@ interface QuantitySuggestion {
   isMinimum: boolean // true si cumple el mínimo solicitado
 }
 
-// Respuesta de la IA
+// Respuesta de la IA - Hoja de producción
+interface AIProductionPlan {
+  pasada: number
+  bobina: string
+  largosCorte: number[]
+  filas: {
+    caja: string
+    altoDesp: number
+    largoDesp: number
+    cantidad: number
+    filasEnBobina: number
+  }[]
+  altosUsados: number
+  sobrante: number
+  desperdicio: string
+  metrosLineales: number
+  notas?: string
+}
+
 interface AIResponse {
+  type?: string
   analysis: string
+  productionPlan?: AIProductionPlan[]
+  summary?: {
+    totalPasadas: number
+    totalMetros160: number
+    totalMetros130: number
+    desperdicioPromedio: string
+    tiempoEstimado: string
+  }
+  suggestions?: {
+    tipo?: string
+    type?: string
+    mensaje?: string
+    message?: string
+    impacto?: string
+    impact?: string
+  }[]
+  wasteBoxes?: {
+    name: string
+    dimensions: string
+    unfoldedH: number
+    cantidad?: number
+    reason: string
+    possibleUses: string[]
+  }[]
+  // Campos legacy para compatibilidad
   bestCombinations?: {
     bobina: string
     boxes: { name: string; count: number }[]
@@ -80,18 +124,40 @@ interface AIResponse {
     wastePercent: number
     reason: string
   }[]
-  suggestions?: {
-    type: string
-    message: string
-    impact: string
-  }[]
-  wasteBoxes?: {
-    name: string
-    dimensions: string
-    unfoldedH: number
-    reason: string
-    possibleUses: string[]
-  }[]
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: Date
+}
+
+// Respuesta de sugerencias de stock
+interface StockBox {
+  name: string
+  dimensions: string
+  unfoldedW: number
+  unfoldedH: number
+  areaM2PerBox: number
+  quantity: number
+  totalM2: number
+  fitsInWaste: boolean
+  sourceWaste: string
+  reason: string
+  priority: string
+}
+
+interface StockSuggestionsResponse {
+  analysis: string
+  totalWasteM2: number
+  stockBoxes: StockBox[]
+  summary: {
+    totalStockBoxes: number
+    totalStockM2: number
+    wasteUtilization: string
+    boxTypes: number
+  }
+  additionalNotes?: string
 }
 
 // Datos de las cajas con medidas calculadas
@@ -595,6 +661,14 @@ export default function CajasProduccion() {
   const [aiResponse, setAiResponse] = useState<AIResponse | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  
+  // Sugerencias de stock
+  const [stockSuggestions, setStockSuggestions] = useState<StockSuggestionsResponse | null>(null)
+  const [stockLoading, setStockLoading] = useState(false)
+  const [stockError, setStockError] = useState<string | null>(null)
   
   // Combinar cajas default + custom
   const BOX_TYPES = useMemo(() => [...DEFAULT_BOX_TYPES, ...customBoxes], [customBoxes])
@@ -649,6 +723,7 @@ export default function CajasProduccion() {
     setAiLoading(true)
     setAiError(null)
     setAiResponse(null)
+    setChatMessages([]) // Limpiar chat al nuevo análisis
     
     try {
       const boxesData = production.map(item => {
@@ -661,7 +736,8 @@ export default function CajasProduccion() {
           h: box.h,
           unfoldedW: box.unfoldedW,
           unfoldedH: box.unfoldedH,
-          quantity: item.quantity
+          quantity: item.quantity,
+          isDobleChapeton: box.isDobleChapeton
         }
       })
       
@@ -671,7 +747,8 @@ export default function CajasProduccion() {
         body: JSON.stringify({
           boxes: boxesData,
           bobinas: BOBINAS,
-          apiKey
+          apiKey,
+          mode: 'analyze'
         })
       })
       
@@ -687,6 +764,200 @@ export default function CajasProduccion() {
       setAiError(err instanceof Error ? err.message : 'Error desconocido')
     } finally {
       setAiLoading(false)
+    }
+  }
+  
+  // Enviar mensaje de chat
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || !apiKey || chatLoading) return
+    
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: chatInput.trim(),
+      timestamp: new Date()
+    }
+    
+    setChatMessages(prev => [...prev, userMessage])
+    setChatInput('')
+    setChatLoading(true)
+    
+    try {
+      const boxesData = production.map(item => {
+        const box = BOX_TYPES.find(b => b.id === item.boxId)!
+        return {
+          id: box.id,
+          name: box.name,
+          l: box.l,
+          w: box.w,
+          h: box.h,
+          unfoldedW: box.unfoldedW,
+          unfoldedH: box.unfoldedH,
+          quantity: item.quantity,
+          isDobleChapeton: box.isDobleChapeton
+        }
+      })
+      
+      // Construir historial de chat para la API
+      const chatHistory = chatMessages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }))
+      
+      const response = await fetch('/api/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          boxes: boxesData,
+          bobinas: BOBINAS,
+          apiKey,
+          mode: 'chat',
+          chatHistory,
+          userMessage: userMessage.content
+        })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Error al enviar mensaje')
+      }
+      
+      const data = await response.json()
+      
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: data.message,
+        timestamp: new Date()
+      }
+      
+      setChatMessages(prev => [...prev, assistantMessage])
+      
+      // Si la respuesta incluye un plan actualizado, actualizar
+      if (data.parsedData?.productionPlan) {
+        setAiResponse(prev => prev ? {
+          ...prev,
+          productionPlan: data.parsedData.productionPlan,
+          summary: data.parsedData.summary || prev.summary
+        } : prev)
+      }
+    } catch (err) {
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: `Error: ${err instanceof Error ? err.message : 'Error desconocido'}`,
+        timestamp: new Date()
+      }
+      setChatMessages(prev => [...prev, errorMessage])
+    } finally {
+      setChatLoading(false)
+    }
+  }
+  
+  // Analizar sobrante para sugerencias de stock
+  const analyzeWasteForStock = async () => {
+    if (!apiKey) {
+      setShowApiKeyModal(true)
+      return
+    }
+    
+    if (combinedOptimization.best.length === 0) return
+    
+    setStockLoading(true)
+    setStockError(null)
+    setStockSuggestions(null)
+    
+    try {
+      const boxesData = production.map(item => {
+        const box = BOX_TYPES.find(b => b.id === item.boxId)!
+        return {
+          id: box.id,
+          name: box.name,
+          l: box.l,
+          w: box.w,
+          h: box.h,
+          unfoldedW: box.unfoldedW,
+          unfoldedH: box.unfoldedH,
+          quantity: item.quantity,
+          isDobleChapeton: box.isDobleChapeton
+        }
+      })
+      
+      // Calcular datos del sobrante
+      const wasteData = {
+        cuts: combinedOptimization.best.map((cut, idx) => ({
+          bobina: cut.bobina,
+          wasteWidth: cut.wasteWidth,
+          wastePercent: cut.wastePercent,
+          rows: cut.rows,
+          lengthM: cut.lengthM,
+          slots: cut.slots.map(s => ({
+            boxName: s.boxName,
+            unfoldedW: s.unfoldedW,
+            unfoldedH: s.unfoldedH
+          }))
+        })),
+        totalWasteM2: combinedOptimization.best.reduce((sum, cut) => {
+          // Área de desperdicio = sobrante_ancho × largo_total
+          return sum + (cut.wasteWidth * cut.lengthM * 1000) / 1000000
+        }, 0)
+      }
+      
+      const response = await fetch('/api/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          boxes: boxesData,
+          bobinas: BOBINAS,
+          apiKey,
+          mode: 'stock_suggestions',
+          wasteData
+        })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Error al analizar sobrante')
+      }
+      
+      const data = await response.json()
+      setStockSuggestions(data)
+    } catch (err) {
+      setStockError(err instanceof Error ? err.message : 'Error desconocido')
+    } finally {
+      setStockLoading(false)
+    }
+  }
+  
+  // Agregar caja de stock sugerida a producción
+  const addStockBoxToProduction = (stockBox: StockBox) => {
+    // Buscar si ya existe en el catálogo
+    const existingBox = BOX_TYPES.find(b => b.name === stockBox.name || b.name.startsWith(stockBox.name.split('×')[0]))
+    
+    if (existingBox) {
+      // Agregar cantidad a producción existente
+      setProduction(prev => {
+        const existing = prev.find(p => p.boxId === existingBox.id)
+        if (existing) {
+          return prev.map(p => p.boxId === existingBox.id 
+            ? { ...p, quantity: p.quantity + stockBox.quantity }
+            : p
+          )
+        }
+        return [...prev, { boxId: existingBox.id, quantity: stockBox.quantity }]
+      })
+    } else {
+      // Crear caja personalizada
+      const id = `stock-${stockBox.name.replace(/[×x]/g, '-')}-${Date.now()}`
+      const newBox: BoxType = {
+        id,
+        name: `${stockBox.name} (Stock)`,
+        l: stockBox.unfoldedW / 10, // Aproximación
+        w: stockBox.unfoldedH / 20,
+        h: stockBox.unfoldedH / 20,
+        unfoldedW: stockBox.unfoldedW,
+        unfoldedH: stockBox.unfoldedH,
+        isCustom: true
+      }
+      setCustomBoxes(prev => [...prev, newBox])
+      setProduction(prev => [...prev, { boxId: id, quantity: stockBox.quantity }])
     }
   }
   
@@ -975,6 +1246,89 @@ export default function CajasProduccion() {
           </div>
         </div>
       </div>
+
+      {/* Panel de Resumen de Producción - Sticky */}
+      {production.length > 0 && (
+        <div className="bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl p-4 mb-6 shadow-lg">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-3">
+              <div className="bg-white/20 rounded-lg p-2">
+                <ShoppingCart className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg tracking-wider">RESUMEN DE PRODUCCIÓN</h3>
+                <p className="text-green-100 text-sm">{production.length} tipo(s) de caja en cola</p>
+              </div>
+            </div>
+            
+            <div className="flex gap-6 flex-wrap">
+              {/* Total Cajas */}
+              <div className="text-center">
+                <div className="text-2xl font-bold">
+                  {production.reduce((sum, p) => sum + p.quantity, 0).toLocaleString()}
+                </div>
+                <div className="text-xs text-green-100">Cajas</div>
+              </div>
+              
+              {/* Total Planchas */}
+              <div className="text-center">
+                <div className="text-2xl font-bold">
+                  {production.reduce((sum, p) => {
+                    const box = BOX_TYPES.find(b => b.id === p.boxId)
+                    if (!box) return sum
+                    const multiplier = box.isDobleChapeton ? 2 : 1
+                    return sum + (p.quantity * multiplier)
+                  }, 0).toLocaleString()}
+                </div>
+                <div className="text-xs text-green-100">Planchas</div>
+              </div>
+
+              {/* Metros lineales estimados */}
+              <div className="text-center">
+                <div className="text-2xl font-bold">
+                  {(production.reduce((sum, p) => {
+                    const box = BOX_TYPES.find(b => b.id === p.boxId)
+                    if (!box) return sum
+                    const multiplier = box.isDobleChapeton ? 2 : 1
+                    return sum + (p.quantity * multiplier * box.unfoldedW / 1000)
+                  }, 0)).toFixed(1)}m
+                </div>
+                <div className="text-xs text-green-100">Largo bobina</div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setViewMode('production')}
+              className="bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
+            >
+              Ver detalle
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Desglose rápido */}
+          <div className="mt-3 pt-3 border-t border-white/20 flex flex-wrap gap-2">
+            {production.map(p => {
+              const box = BOX_TYPES.find(b => b.id === p.boxId)
+              if (!box) return null
+              return (
+                <div key={p.boxId} className="bg-white/10 rounded-lg px-3 py-1.5 text-sm flex items-center gap-2">
+                  <span className="font-medium">{box.name}</span>
+                  <span className="bg-white/20 px-2 py-0.5 rounded text-xs">
+                    {p.quantity.toLocaleString()}
+                  </span>
+                  {box.isDobleChapeton && (
+                    <span className="bg-blue-400/50 px-1.5 py-0.5 rounded text-xs flex items-center gap-1">
+                      <Layers className="w-3 h-3" />
+                      2P
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Vista: Catálogo */}
       {viewMode === 'catalog' && (
@@ -1796,6 +2150,147 @@ export default function CajasProduccion() {
                   </div>
                 )}
               </div>
+              
+              {/* Sección de sugerencias de stock con IA */}
+              <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-4 rounded-lg">
+                <div className="flex items-center justify-between flex-wrap gap-4 mb-4">
+                  <div>
+                    <h3 className="font-display text-lg text-purple-800 flex items-center gap-2">
+                      <Sparkles className="w-5 h-5" />
+                      SUGERENCIAS DE STOCK CON SOBRANTE
+                    </h3>
+                    <p className="text-sm text-purple-600">
+                      Analiza el material sobrante y sugiere cajas estándar para stockear (máx. 2000 m² por tipo)
+                    </p>
+                  </div>
+                  <button
+                    onClick={analyzeWasteForStock}
+                    disabled={stockLoading || !apiKey}
+                    className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-5 py-2.5 rounded-lg font-display tracking-wider hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {stockLoading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Analizando...
+                      </>
+                    ) : (
+                      <>
+                        <Bot className="w-5 h-5" />
+                        ANALIZAR SOBRANTE
+                      </>
+                    )}
+                  </button>
+                </div>
+                
+                {!apiKey && (
+                  <div className="bg-amber-100 text-amber-700 px-3 py-2 rounded text-sm flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    Configurá tu API Key para usar esta función
+                    <button onClick={() => setShowApiKeyModal(true)} className="underline ml-1">Configurar</button>
+                  </div>
+                )}
+                
+                {stockError && (
+                  <div className="bg-red-50 border border-red-300 p-3 rounded text-red-700 text-sm">
+                    <AlertTriangle className="w-4 h-4 inline mr-2" />
+                    {stockError}
+                  </div>
+                )}
+                
+                {stockSuggestions && (
+                  <div className="space-y-4">
+                    {/* Análisis */}
+                    <div className="bg-white rounded-lg p-3">
+                      <p className="text-gray-700 text-sm">{stockSuggestions.analysis}</p>
+                    </div>
+                    
+                    {/* Resumen */}
+                    {stockSuggestions.summary && (
+                      <div className="bg-gradient-to-r from-green-600 to-emerald-600 text-white p-3 rounded-lg">
+                        <div className="grid grid-cols-4 gap-3 text-center">
+                          <div>
+                            <div className="text-xl font-bold">{stockSuggestions.summary.boxTypes || 0}</div>
+                            <div className="text-xs text-green-100">Tipos</div>
+                          </div>
+                          <div>
+                            <div className="text-xl font-bold">{stockSuggestions.summary.totalStockBoxes?.toLocaleString() || 0}</div>
+                            <div className="text-xs text-green-100">Cajas</div>
+                          </div>
+                          <div>
+                            <div className="text-xl font-bold">{stockSuggestions.summary.totalStockM2?.toFixed(1) || 0} m²</div>
+                            <div className="text-xs text-green-100">Material</div>
+                          </div>
+                          <div>
+                            <div className="text-xl font-bold">{stockSuggestions.summary.wasteUtilization || '-'}</div>
+                            <div className="text-xs text-green-100">Aprovechado</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Lista de cajas sugeridas */}
+                    {stockSuggestions.stockBoxes && stockSuggestions.stockBoxes.length > 0 ? (
+                      <div className="space-y-2">
+                        <h4 className="font-display text-sm text-purple-800">CAJAS SUGERIDAS PARA STOCK:</h4>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {stockSuggestions.stockBoxes.map((box, idx) => (
+                            <div 
+                              key={idx} 
+                              className={`bg-white border-2 rounded-lg p-3 ${
+                                box.priority === 'alta' ? 'border-green-400' : 
+                                box.priority === 'media' ? 'border-yellow-400' : 'border-gray-300'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="font-bold text-purple-800">{box.name}</span>
+                                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                      box.priority === 'alta' ? 'bg-green-100 text-green-700' :
+                                      box.priority === 'media' ? 'bg-yellow-100 text-yellow-700' :
+                                      'bg-gray-100 text-gray-600'
+                                    }`}>
+                                      {box.priority}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-gray-500 mb-1">
+                                    Plancha: {box.unfoldedW}×{box.unfoldedH}mm
+                                  </div>
+                                  <div className="text-sm">
+                                    <span className="font-semibold text-green-700">{box.quantity.toLocaleString()} unidades</span>
+                                    <span className="text-gray-500 ml-2">({box.totalM2?.toFixed(1) || '?'} m²)</span>
+                                  </div>
+                                  <p className="text-xs text-gray-600 mt-1">{box.reason}</p>
+                                  <p className="text-xs text-purple-500 mt-1">{box.sourceWaste}</p>
+                                </div>
+                                <button
+                                  onClick={() => addStockBoxToProduction(box)}
+                                  className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1 flex-shrink-0"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  Agregar
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center text-purple-600 py-4">
+                        <Package className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                        <p className="text-sm">No hay sugerencias de stock disponibles</p>
+                      </div>
+                    )}
+                    
+                    {stockSuggestions.additionalNotes && (
+                      <div className="bg-blue-50 border border-blue-200 p-3 rounded text-sm text-blue-700">
+                        <Lightbulb className="w-4 h-4 inline mr-2" />
+                        {stockSuggestions.additionalNotes}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </section>
@@ -1822,10 +2317,11 @@ export default function CajasProduccion() {
               <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-6 rounded-lg">
                 <div className="flex items-center justify-between flex-wrap gap-4">
                   <div>
-                    <h3 className="font-display text-lg text-purple-800 mb-1">Consultar IA</h3>
+                    <h3 className="font-display text-lg text-purple-800 mb-1">
+                      {aiResponse ? 'Regenerar Hoja de Producción' : 'Generar Hoja de Producción'}
+                    </h3>
                     <p className="text-sm text-purple-600">
-                      Claude analizará tu producción y te dará sugerencias para optimizar combinaciones 
-                      y aprovechar material sobrante.
+                      Claude analizará tu producción y generará una hoja de producción optimizada con pasadas y combinaciones.
                     </p>
                   </div>
                   <button
@@ -1840,8 +2336,8 @@ export default function CajasProduccion() {
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-5 h-5" />
-                        ANALIZAR CON IA
+                        <FileText className="w-5 h-5" />
+                        {aiResponse ? 'REGENERAR' : 'GENERAR HOJA'}
                       </>
                     )}
                   </button>
@@ -1867,130 +2363,311 @@ export default function CajasProduccion() {
                 </div>
               )}
               
-              {/* Respuesta de IA */}
+              {/* Respuesta de IA - Hoja de Producción */}
               {aiResponse && (
-                <div className="space-y-4">
-                  {/* Análisis */}
-                  <div className="bg-white border-2 border-purple-200 p-4 rounded-lg">
-                    <h3 className="font-display text-lg text-purple-800 mb-2 flex items-center gap-2">
-                      <Bot className="w-5 h-5" />
-                      Análisis
-                    </h3>
-                    <p className="text-gray-700">{aiResponse.analysis}</p>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {/* Columna izquierda: Hoja de Producción */}
+                  <div className="lg:col-span-2 space-y-4">
+                    {/* Análisis */}
+                    <div className="bg-white border-2 border-purple-200 p-4 rounded-lg">
+                      <h3 className="font-display text-lg text-purple-800 mb-2 flex items-center gap-2">
+                        <Bot className="w-5 h-5" />
+                        Análisis
+                      </h3>
+                      <p className="text-gray-700">{aiResponse.analysis}</p>
+                    </div>
+                    
+                    {/* Resumen de producción */}
+                    {aiResponse.summary && (
+                      <div className="bg-gradient-to-r from-green-600 to-emerald-600 text-white p-4 rounded-lg">
+                        <h3 className="font-display text-lg mb-3 flex items-center gap-2">
+                          <BarChart3 className="w-5 h-5" />
+                          RESUMEN DE PRODUCCIÓN
+                        </h3>
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                          <div className="text-center">
+                            <div className="text-2xl font-bold">{aiResponse.summary.totalPasadas || '-'}</div>
+                            <div className="text-xs text-green-100">Pasadas</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-2xl font-bold">{aiResponse.summary.totalMetros160?.toFixed(1) || '0'}m</div>
+                            <div className="text-xs text-green-100">Bobina 1.60</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-2xl font-bold">{aiResponse.summary.totalMetros130?.toFixed(1) || '0'}m</div>
+                            <div className="text-xs text-green-100">Bobina 1.30</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-2xl font-bold">{aiResponse.summary.desperdicioPromedio || '-'}</div>
+                            <div className="text-xs text-green-100">Desperdicio</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-2xl font-bold flex items-center justify-center gap-1">
+                              <Clock className="w-4 h-4" />
+                              {aiResponse.summary.tiempoEstimado || '-'}
+                            </div>
+                            <div className="text-xs text-green-100">Estimado</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Plan de producción - Pasadas */}
+                    {aiResponse.productionPlan && aiResponse.productionPlan.length > 0 && (
+                      <div className="space-y-3">
+                        <h3 className="font-display text-lg text-amber-900 flex items-center gap-2">
+                          <FileText className="w-5 h-5" />
+                          HOJA DE PRODUCCIÓN
+                        </h3>
+                        {aiResponse.productionPlan.map((pasada, idx) => (
+                          <div key={idx} className="bg-white border-2 border-amber-200 rounded-lg overflow-hidden">
+                            {/* Header de pasada */}
+                            <div className="bg-gradient-to-r from-amber-100 to-orange-100 px-4 py-2 flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <span className="bg-amber-600 text-white text-sm px-3 py-1 rounded font-bold">
+                                  PASADA {pasada.pasada}
+                                </span>
+                                <span className={`text-sm px-2 py-0.5 rounded ${pasada.bobina === '1.60' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
+                                  Bobina {pasada.bobina}m
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-4 text-sm">
+                                <span className="text-gray-600">
+                                  <Ruler className="w-4 h-4 inline mr-1" />
+                                  {pasada.metrosLineales?.toFixed(1) || '?'}m
+                                </span>
+                                <span className={`font-semibold ${parseFloat(pasada.desperdicio) < 10 ? 'text-green-600' : 'text-amber-600'}`}>
+                                  {pasada.desperdicio} desp.
+                                </span>
+                              </div>
+                            </div>
+                            
+                            {/* Contenido de pasada */}
+                            <div className="p-4">
+                              {/* Largos de corte */}
+                              <div className="mb-3 flex items-center gap-2 text-sm">
+                                <Scissors className="w-4 h-4 text-amber-600" />
+                                <span className="text-gray-600">Largos de corte:</span>
+                                {pasada.largosCorte?.map((largo, i) => (
+                                  <span key={i} className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-mono">
+                                    {largo}mm
+                                  </span>
+                                ))}
+                              </div>
+                              
+                              {/* Tabla de filas */}
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="bg-gray-50 text-left">
+                                      <th className="px-3 py-2">Caja</th>
+                                      <th className="px-3 py-2 text-center">Alto Desp.</th>
+                                      <th className="px-3 py-2 text-center">Largo Desp.</th>
+                                      <th className="px-3 py-2 text-center">Cantidad</th>
+                                      <th className="px-3 py-2 text-center">Filas</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {pasada.filas?.map((fila, i) => (
+                                      <tr key={i} className="border-t">
+                                        <td className="px-3 py-2 font-medium">{fila.caja}</td>
+                                        <td className="px-3 py-2 text-center text-gray-600">{fila.altoDesp}mm</td>
+                                        <td className="px-3 py-2 text-center text-gray-600">{fila.largoDesp}mm</td>
+                                        <td className="px-3 py-2 text-center">
+                                          <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded font-semibold">
+                                            {fila.cantidad}
+                                          </span>
+                                        </td>
+                                        <td className="px-3 py-2 text-center text-gray-600">{fila.filasEnBobina}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              
+                              {/* Footer de pasada */}
+                              <div className="mt-3 pt-3 border-t flex items-center justify-between text-sm">
+                                <span className="text-gray-600">
+                                  Alto usado: <strong>{pasada.altosUsados}mm</strong> | 
+                                  Sobrante: <span className={pasada.sobrante > 100 ? 'text-amber-600' : 'text-green-600'}>{pasada.sobrante}mm</span>
+                                </span>
+                                {pasada.notas && (
+                                  <span className="text-purple-600 italic text-xs">{pasada.notas}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    
+                    {/* Sugerencias */}
+                    {aiResponse.suggestions && aiResponse.suggestions.length > 0 && (
+                      <div className="bg-white border-2 border-yellow-200 p-4 rounded-lg">
+                        <h3 className="font-display text-lg text-yellow-800 mb-3 flex items-center gap-2">
+                          <Lightbulb className="w-5 h-5" />
+                          Sugerencias de Optimización
+                        </h3>
+                        <div className="space-y-2">
+                          {aiResponse.suggestions.map((sug, idx) => (
+                            <div key={idx} className="bg-yellow-50 p-3 rounded flex items-start gap-3">
+                              <TrendingUp className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                              <div className="flex-1">
+                                <p className="text-sm text-gray-700">{sug.mensaje || sug.message}</p>
+                                <p className="text-xs text-yellow-600 mt-1 font-semibold">{sug.impacto || sug.impact}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Cajas para sobrante */}
+                    {aiResponse.wasteBoxes && aiResponse.wasteBoxes.length > 0 && (
+                      <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-4 rounded-lg">
+                        <h3 className="font-display text-lg text-purple-800 mb-3 flex items-center gap-2">
+                          <Sparkles className="w-5 h-5" />
+                          Cajas Sugeridas para el Sobrante
+                        </h3>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {aiResponse.wasteBoxes.map((box, idx) => (
+                            <div key={idx} className="bg-white p-3 rounded-lg">
+                              <div className="flex items-center justify-between mb-2">
+                                <div>
+                                  <h4 className="font-semibold text-purple-800">{box.name}</h4>
+                                  <p className="text-xs text-gray-600">{box.dimensions}mm</p>
+                                  {box.cantidad && (
+                                    <p className="text-xs text-green-600">Cantidad sugerida: {box.cantidad}</p>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => addAISuggestedBox(box.dimensions, box.unfoldedH)}
+                                  className="bg-purple-600 text-white px-3 py-1 rounded text-xs hover:bg-purple-500 flex items-center gap-1"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  Agregar
+                                </button>
+                              </div>
+                              <p className="text-xs text-gray-600 mb-2">{box.reason}</p>
+                              <div className="flex flex-wrap gap-1">
+                                {box.possibleUses?.map((use, i) => (
+                                  <span key={i} className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded">
+                                    {use}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   
-                  {/* Mejores combinaciones */}
-                  {aiResponse.bestCombinations && aiResponse.bestCombinations.length > 0 && (
-                    <div className="bg-white border-2 border-green-200 p-4 rounded-lg">
-                      <h3 className="font-display text-lg text-green-800 mb-3 flex items-center gap-2">
-                        <Combine className="w-5 h-5" />
-                        Mejores Combinaciones
-                      </h3>
-                      <div className="space-y-3">
-                        {aiResponse.bestCombinations.map((comb, idx) => (
-                          <div key={idx} className="bg-green-50 p-3 rounded">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded">Bobina {comb.bobina}m</span>
-                              <span className={`text-sm ${comb.wastePercent < 10 ? 'text-green-600' : 'text-amber-600'}`}>
-                                {comb.wastePercent.toFixed(1)}% desperdicio
-                              </span>
-                            </div>
-                            <div className="text-sm mb-1">
-                              {comb.boxes.map((b, i) => (
-                                <span key={i} className="inline-block bg-white px-2 py-0.5 rounded mr-1 mb-1">
-                                  {b.count}× {b.name}
-                                </span>
-                              ))}
-                            </div>
-                            <p className="text-xs text-gray-600">{comb.reason}</p>
-                          </div>
-                        ))}
+                  {/* Columna derecha: Chat */}
+                  <div className="lg:col-span-1">
+                    <div className="bg-white border-2 border-purple-200 rounded-lg h-[600px] flex flex-col sticky top-4">
+                      {/* Header del chat */}
+                      <div className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 py-3 rounded-t-lg flex items-center gap-2">
+                        <MessageCircle className="w-5 h-5" />
+                        <span className="font-display tracking-wider">CHAT CON CLAUDE</span>
                       </div>
-                    </div>
-                  )}
-                  
-                  {/* Sugerencias */}
-                  {aiResponse.suggestions && aiResponse.suggestions.length > 0 && (
-                    <div className="bg-white border-2 border-yellow-200 p-4 rounded-lg">
-                      <h3 className="font-display text-lg text-yellow-800 mb-3 flex items-center gap-2">
-                        <Lightbulb className="w-5 h-5" />
-                        Sugerencias
-                      </h3>
-                      <div className="space-y-2">
-                        {aiResponse.suggestions.map((sug, idx) => (
-                          <div key={idx} className="bg-yellow-50 p-3 rounded flex items-start gap-3">
-                            <div className="flex-shrink-0">
-                              {sug.type === 'quantity_adjustment' && <Calculator className="w-5 h-5 text-yellow-600" />}
-                              {sug.type === 'combination' && <Combine className="w-5 h-5 text-yellow-600" />}
-                              {sug.type === 'efficiency_tip' && <TrendingUp className="w-5 h-5 text-yellow-600" />}
-                            </div>
-                            <div className="flex-1">
-                              <p className="text-sm text-gray-700">{sug.message}</p>
-                              <p className="text-xs text-yellow-600 mt-1 font-semibold">{sug.impact}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Cajas para sobrante */}
-                  {aiResponse.wasteBoxes && aiResponse.wasteBoxes.length > 0 && (
-                    <div className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-300 p-4 rounded-lg">
-                      <h3 className="font-display text-lg text-purple-800 mb-3 flex items-center gap-2">
-                        <Sparkles className="w-5 h-5" />
-                        Cajas Sugeridas para el Sobrante
-                      </h3>
-                      <p className="text-sm text-purple-600 mb-3">
-                        Estas cajas podrían fabricarse con el material sobrante de las combinaciones:
-                      </p>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {aiResponse.wasteBoxes.map((box, idx) => (
-                          <div key={idx} className="bg-white p-3 rounded-lg">
-                            <div className="flex items-center justify-between mb-2">
-                              <div>
-                                <h4 className="font-semibold text-purple-800">{box.name}</h4>
-                                <p className="text-xs text-gray-600">{box.dimensions} cm</p>
-                                <p className="text-xs text-purple-500">Alto desplegado: {box.unfoldedH}mm</p>
-                              </div>
-                              <button
-                                onClick={() => addAISuggestedBox(box.dimensions, box.unfoldedH)}
-                                className="bg-purple-600 text-white px-3 py-1 rounded text-xs hover:bg-purple-500 flex items-center gap-1"
+                      
+                      {/* Mensajes */}
+                      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                        {chatMessages.length === 0 ? (
+                          <div className="text-center text-gray-400 py-8">
+                            <Bot className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                            <p className="text-sm">Preguntame cómo mejorar la hoja de producción</p>
+                            <div className="mt-4 space-y-2">
+                              <button 
+                                onClick={() => setChatInput('¿Cómo puedo reducir el desperdicio?')}
+                                className="text-xs bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full hover:bg-purple-100"
                               >
-                                <Plus className="w-3 h-3" />
-                                Agregar
+                                ¿Cómo reducir desperdicio?
+                              </button>
+                              <button 
+                                onClick={() => setChatInput('¿Puedo combinar de otra forma las cajas?')}
+                                className="text-xs bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full hover:bg-purple-100"
+                              >
+                                Otras combinaciones
+                              </button>
+                              <button 
+                                onClick={() => setChatInput('Quiero priorizar la bobina de 1.60m')}
+                                className="text-xs bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full hover:bg-purple-100"
+                              >
+                                Priorizar bobina 1.60
                               </button>
                             </div>
-                            <p className="text-xs text-gray-600 mb-2">{box.reason}</p>
-                            <div className="flex flex-wrap gap-1">
-                              {box.possibleUses.map((use, i) => (
-                                <span key={i} className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded">
-                                  {use}
-                                </span>
-                              ))}
+                          </div>
+                        ) : (
+                          chatMessages.map((msg, idx) => (
+                            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[85%] rounded-lg px-3 py-2 ${
+                                msg.role === 'user' 
+                                  ? 'bg-purple-600 text-white' 
+                                  : 'bg-gray-100 text-gray-800'
+                              }`}>
+                                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                                <p className={`text-xs mt-1 ${msg.role === 'user' ? 'text-purple-200' : 'text-gray-400'}`}>
+                                  {msg.timestamp.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                        {chatLoading && (
+                          <div className="flex justify-start">
+                            <div className="bg-gray-100 rounded-lg px-4 py-2 flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
+                              <span className="text-sm text-gray-600">Pensando...</span>
                             </div>
                           </div>
-                        ))}
+                        )}
+                      </div>
+                      
+                      {/* Input del chat */}
+                      <div className="border-t p-3">
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
+                            placeholder="Escribí tu mensaje..."
+                            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-400"
+                            disabled={chatLoading}
+                          />
+                          <button
+                            onClick={sendChatMessage}
+                            disabled={!chatInput.trim() || chatLoading}
+                            className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Send className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
               
               {/* Producción actual para referencia */}
-              <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
-                <h4 className="text-sm font-semibold text-gray-600 mb-2">Producción actual analizada:</h4>
-                <div className="flex flex-wrap gap-2">
-                  {production.map(item => {
-                    const box = BOX_TYPES.find(b => b.id === item.boxId)
-                    return box ? (
-                      <span key={item.boxId} className="bg-white border px-2 py-1 rounded text-sm">
-                        {item.quantity}× {box.name}
-                      </span>
-                    ) : null
-                  })}
+              {!aiResponse && (
+                <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
+                  <h4 className="text-sm font-semibold text-gray-600 mb-2">Producción a analizar:</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {production.map(item => {
+                      const box = BOX_TYPES.find(b => b.id === item.boxId)
+                      return box ? (
+                        <span key={item.boxId} className="bg-white border px-2 py-1 rounded text-sm">
+                          {item.quantity.toLocaleString()}× {box.name}
+                          {box.isDobleChapeton && <span className="ml-1 text-xs text-blue-600">(2P)</span>}
+                        </span>
+                      ) : null
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </section>

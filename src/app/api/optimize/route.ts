@@ -24,15 +24,26 @@ interface OptimizeRequest {
     '1.30': { usable: number }
   }
   apiKey?: string
-  mode?: 'analyze' | 'chat'
+  mode?: 'analyze' | 'chat' | 'stock_suggestions'
   chatHistory?: ChatMessage[]
   userMessage?: string
+  wasteData?: {
+    cuts: {
+      bobina: string
+      wasteWidth: number
+      wastePercent: number
+      rows: number
+      lengthM: number
+      slots: { boxName: string; unfoldedW: number; unfoldedH: number }[]
+    }[]
+    totalWasteM2: number
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: OptimizeRequest = await request.json()
-    const { boxes, bobinas, mode = 'analyze', chatHistory = [], userMessage } = body
+    const { boxes, bobinas, mode = 'analyze', chatHistory = [], userMessage, wasteData } = body
     
     // Usar API key del body o de variable de entorno
     const apiKey = body.apiKey || process.env.ANTHROPIC_API_KEY
@@ -50,6 +61,10 @@ export async function POST(request: NextRequest) {
     if (mode === 'analyze') {
       // Modo análisis inicial: generar hoja de producción
       const prompt = buildProductionSheetPrompt(boxes, bobinas)
+      messages = [{ role: 'user', content: prompt }]
+    } else if (mode === 'stock_suggestions') {
+      // Modo sugerencias de stock con sobrante
+      const prompt = buildStockSuggestionsPrompt(boxes, bobinas, wasteData!)
       messages = [{ role: 'user', content: prompt }]
     } else {
       // Modo chat: continuar conversación
@@ -104,6 +119,23 @@ export async function POST(request: NextRequest) {
           productionPlan: [],
           summary: {},
           suggestions: []
+        })
+      }
+    } else if (mode === 'stock_suggestions') {
+      // Parsear sugerencias de stock
+      try {
+        const jsonMatch = aiResponse.match(/```json\n?([\s\S]*?)\n?```/)
+        const jsonStr = jsonMatch ? jsonMatch[1] : aiResponse
+        const stockSuggestions = JSON.parse(jsonStr)
+        return NextResponse.json({
+          type: 'stock_suggestions',
+          ...stockSuggestions
+        })
+      } catch {
+        return NextResponse.json({ 
+          type: 'stock_suggestions',
+          analysis: aiResponse,
+          stockBoxes: []
         })
       }
     } else {
@@ -248,4 +280,118 @@ IMPORTANTE:
 - Sé preciso con los cálculos de metros lineales
 - Los largos de corte deben ser ≤ 2080mm
 - Sugiere cajas pequeñas para aprovechar sobrantes significativos (>100mm)`
+}
+
+interface WasteData {
+  cuts: {
+    bobina: string
+    wasteWidth: number
+    wastePercent: number
+    rows: number
+    lengthM: number
+    slots: { boxName: string; unfoldedW: number; unfoldedH: number }[]
+  }[]
+  totalWasteM2: number
+}
+
+function buildStockSuggestionsPrompt(
+  boxes: BoxData[], 
+  bobinas: { '1.60': { usable: number }, '1.30': { usable: number } },
+  wasteData: WasteData
+): string {
+  const currentProduction = boxes.map(b => 
+    `- ${b.name}: ${b.quantity} unidades (plancha ${b.unfoldedW}×${b.unfoldedH}mm)`
+  ).join('\n')
+
+  const wasteDetails = wasteData.cuts.map((cut, idx) => 
+    `Corte #${idx + 1} (Bobina ${cut.bobina}m): 
+     - Sobrante ancho: ${cut.wasteWidth}mm
+     - Filas: ${cut.rows}
+     - Metros lineales: ${cut.lengthM.toFixed(2)}m
+     - Cajas producidas: ${cut.slots.map(s => s.boxName).join(', ')}`
+  ).join('\n')
+
+  // Cajas estándar disponibles para sugerir
+  const standardBoxes = [
+    { name: '20×20×10', l: 20, w: 20, h: 10, unfoldedW: 850, unfoldedH: 300 },
+    { name: '20×20×20', l: 20, w: 20, h: 20, unfoldedW: 850, unfoldedH: 400 },
+    { name: '30×20×15', l: 30, w: 20, h: 15, unfoldedW: 1050, unfoldedH: 350 },
+    { name: '30×20×20', l: 30, w: 20, h: 20, unfoldedW: 1050, unfoldedH: 400 },
+    { name: '40×30×20', l: 40, w: 30, h: 20, unfoldedW: 1450, unfoldedH: 500 },
+    { name: '40×30×30', l: 40, w: 30, h: 30, unfoldedW: 1450, unfoldedH: 600 },
+    { name: '50×35×35', l: 50, w: 35, h: 35, unfoldedW: 1750, unfoldedH: 700 },
+    { name: '50×40×40', l: 50, w: 40, h: 40, unfoldedW: 1850, unfoldedH: 800 },
+    { name: '55×45×36', l: 55, w: 45, h: 36, unfoldedW: 2050, unfoldedH: 810 },
+    { name: '60×40×40', l: 60, w: 40, h: 40, unfoldedW: 2050, unfoldedH: 800 },
+    { name: '70×50×50', l: 70, w: 50, h: 50, unfoldedW: 2450, unfoldedH: 1000, dobleChapeton: true }
+  ]
+
+  const standardBoxList = standardBoxes.map(b => 
+    `- ${b.name}: plancha ${b.unfoldedW}×${b.unfoldedH}mm${b.dobleChapeton ? ' (doble chapetón)' : ''}`
+  ).join('\n')
+
+  return `Eres un experto en optimización de producción de cajas de cartón corrugado. 
+Tu tarea es analizar el SOBRANTE de una producción combinada y sugerir qué CAJAS ESTÁNDAR podrían fabricarse para STOCK.
+
+PRODUCCIÓN ACTUAL:
+${currentProduction}
+
+DETALLE DE SOBRANTES POR CORTE:
+${wasteDetails}
+
+MATERIAL SOBRANTE TOTAL ESTIMADO: ${wasteData.totalWasteM2.toFixed(2)} m²
+
+CATÁLOGO DE CAJAS ESTÁNDAR DISPONIBLES:
+${standardBoxList}
+
+BOBINAS DISPONIBLES:
+- Bobina 1.60m: ${bobinas['1.60'].usable}mm útiles
+- Bobina 1.30m: ${bobinas['1.30'].usable}mm útiles
+
+REGLAS IMPORTANTES:
+1. El largo máximo de plancha es 2080mm
+2. El alto de la caja desplegada (unfoldedH) debe caber en el sobrante de ancho de la bobina
+3. LÍMITE DE STOCK: Máximo 2000 m² de material POR TIPO de caja sugerida
+4. Prioriza cajas pequeñas que quepan mejor en los sobrantes
+5. Calcula cuántas unidades se pueden hacer con el sobrante disponible
+
+FÓRMULAS:
+- Área por caja = (unfoldedW × unfoldedH) / 1,000,000 m²
+- Cantidad máxima por tipo = min(cajas_posibles_con_sobrante, 2000 / area_por_caja)
+
+RESPONDE EN JSON:
+\`\`\`json
+{
+  "analysis": "Resumen del análisis del sobrante y oportunidades de stock",
+  "totalWasteM2": número,
+  "stockBoxes": [
+    {
+      "name": "20×20×10",
+      "dimensions": "200x200x100mm", 
+      "unfoldedW": 850,
+      "unfoldedH": 300,
+      "areaM2PerBox": 0.255,
+      "quantity": 500,
+      "totalM2": 127.5,
+      "fitsInWaste": true,
+      "sourceWaste": "Corte #1 - sobrante 320mm",
+      "reason": "Cabe perfectamente en el sobrante de 320mm del corte #1",
+      "priority": "alta"
+    }
+  ],
+  "summary": {
+    "totalStockBoxes": 1500,
+    "totalStockM2": 450.5,
+    "wasteUtilization": "85%",
+    "boxTypes": 3
+  },
+  "additionalNotes": "Notas adicionales sobre la optimización"
+}
+\`\`\`
+
+IMPORTANTE:
+- Solo sugiere cajas cuyo unfoldedH quepa en algún sobrante de ancho
+- Prioriza las cajas más pequeñas que mejor aprovechen el sobrante
+- Respeta el límite de 2000 m² por tipo de caja
+- Si no hay sobrante aprovechable, indícalo claramente`
 }
