@@ -2,6 +2,8 @@
 
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { Package, Scissors, Calculator, BarChart3, Box, Layers, AlertTriangle, Check, Combine, Zap, Lightbulb, TrendingUp, ArrowRight, Plus, Trash2, Sparkles, Bot, Settings, X, Loader2, ShoppingCart, ChevronRight, Send, MessageCircle, FileText, Clock, Ruler } from 'lucide-react'
+import { useAuth } from '@/lib/auth-context'
+import { supabase } from '@/lib/supabase'
 
 // Tipos de datos
 interface BoxType {
@@ -645,6 +647,7 @@ function findBestCombinations(
 
 // Componente principal
 export default function CajasProduccion() {
+  const { user } = useAuth()
   const [production, setProduction] = useState<ProductionItem[]>([])
   const [viewMode, setViewMode] = useState<'catalog' | 'production' | 'optimization' | 'combined' | 'suggestions' | 'ai'>('catalog')
   const [quantities, setQuantities] = useState<Record<string, number>>({})
@@ -654,6 +657,8 @@ export default function CajasProduccion() {
   const [customBoxes, setCustomBoxes] = useState<BoxType[]>([])
   const [showCustomForm, setShowCustomForm] = useState(false)
   const [customForm, setCustomForm] = useState({ l: '', w: '', h: '', quantity: '' })
+  const [loadingCustomBoxes, setLoadingCustomBoxes] = useState(false)
+  const [savingBox, setSavingBox] = useState(false)
   
   // IA
   const [apiKey, setApiKey] = useState('')
@@ -673,8 +678,55 @@ export default function CajasProduccion() {
   // Combinar cajas default + custom
   const BOX_TYPES = useMemo(() => [...DEFAULT_BOX_TYPES, ...customBoxes], [customBoxes])
 
+  // Cargar cajas personalizadas del usuario desde Supabase
+  useEffect(() => {
+    const loadCustomBoxes = async () => {
+      if (!user) {
+        setCustomBoxes([])
+        return
+      }
+      
+      setLoadingCustomBoxes(true)
+      try {
+        const { data, error } = await supabase
+          .from('box_catalog')
+          .select('*')
+          .eq('created_by', user.id)
+          .eq('is_standard', false)
+          .eq('active', true)
+        
+        if (error) {
+          console.error('Error loading custom boxes:', error)
+          return
+        }
+        
+        if (data) {
+          const boxes: BoxType[] = data.map(box => ({
+            id: box.id,
+            name: box.name,
+            l: box.l_mm,
+            w: box.w_mm,
+            h: box.h_mm,
+            unfoldedW: box.unfolded_w,
+            unfoldedH: box.unfolded_h,
+            isCustom: true,
+            isDobleChapeton: box.is_doble_chapeton,
+            planchaW: box.plancha_w
+          }))
+          setCustomBoxes(boxes)
+        }
+      } catch (err) {
+        console.error('Error loading custom boxes:', err)
+      } finally {
+        setLoadingCustomBoxes(false)
+      }
+    }
+    
+    loadCustomBoxes()
+  }, [user])
+
   // Agregar caja personalizada
-  const addCustomBox = () => {
+  const addCustomBox = async () => {
     const l = parseInt(customForm.l)
     const w = parseInt(customForm.w)
     const h = parseInt(customForm.h)
@@ -683,23 +735,90 @@ export default function CajasProduccion() {
     if (l > 0 && w > 0 && h > 0) {
       const { unfoldedW, unfoldedH } = calculateUnfoldedFromMM(l, w, h)
       const chapeton = calculateDobleChapeton(unfoldedW, unfoldedH)
-      const id = `custom-${l}x${w}x${h}-${Date.now()}`
       
-      const newBox: BoxType = {
-        id,
-        name: chapeton.needsDobleChapeton ? `${l}×${w}×${h}mm (2P)` : `${l}×${w}×${h}mm`,
-        l, w, h,
-        unfoldedW: chapeton.planchaW, // Para doble chapetón, guardamos el tamaño de cada plancha
-        unfoldedH,
-        isCustom: true,
-        isDobleChapeton: chapeton.needsDobleChapeton,
-        planchaW: chapeton.planchaW
-      }
-      setCustomBoxes(prev => [...prev, newBox])
+      const boxName = chapeton.needsDobleChapeton ? `${l}×${w}×${h}mm (2P)` : `${l}×${w}×${h}mm`
       
-      // Si hay cantidad, agregar a producción
-      if (qty > 0) {
-        setProduction(prev => [...prev, { boxId: id, quantity: qty }])
+      console.log('=== ADDING CUSTOM BOX ===')
+      console.log('User:', user ? user.id : 'NO USER')
+      console.log('Box:', boxName, l, w, h)
+      
+      // Si el usuario está logueado, guardar en Supabase
+      if (user) {
+        setSavingBox(true)
+        try {
+          const insertData = {
+            name: boxName,
+            l_mm: l,
+            w_mm: w,
+            h_mm: h,
+            unfolded_w: chapeton.planchaW,
+            unfolded_h: unfoldedH,
+            is_doble_chapeton: chapeton.needsDobleChapeton,
+            plancha_w: chapeton.needsDobleChapeton ? chapeton.planchaW : null,
+            is_standard: false,
+            created_by: user.id,
+            active: true
+          }
+          console.log('Inserting to Supabase:', insertData)
+          
+          const { data, error } = await supabase
+            .from('box_catalog')
+            .insert(insertData)
+            .select()
+            .single()
+          
+          console.log('Supabase response - data:', data, 'error:', error)
+          
+          if (error) {
+            console.error('Error saving box:', error)
+            alert(`Error al guardar la caja: ${error.message}`)
+            return
+          }
+          
+          if (data) {
+            console.log('Box saved successfully:', data.id)
+            const newBox: BoxType = {
+              id: data.id,
+              name: boxName,
+              l, w, h,
+              unfoldedW: chapeton.planchaW,
+              unfoldedH,
+              isCustom: true,
+              isDobleChapeton: chapeton.needsDobleChapeton,
+              planchaW: chapeton.planchaW
+            }
+            setCustomBoxes(prev => [...prev, newBox])
+            
+            // Si hay cantidad, agregar a producción
+            if (qty > 0) {
+              setProduction(prev => [...prev, { boxId: data.id, quantity: qty }])
+            }
+          }
+        } catch (err) {
+          console.error('Error saving box:', err)
+          alert('Error al guardar la caja.')
+        } finally {
+          setSavingBox(false)
+        }
+      } else {
+        // Usuario no logueado: guardar solo en memoria local
+        console.log('NO USER - saving to local memory only')
+        const id = `custom-${l}x${w}x${h}-${Date.now()}`
+        const newBox: BoxType = {
+          id,
+          name: boxName,
+          l, w, h,
+          unfoldedW: chapeton.planchaW,
+          unfoldedH,
+          isCustom: true,
+          isDobleChapeton: chapeton.needsDobleChapeton,
+          planchaW: chapeton.planchaW
+        }
+        setCustomBoxes(prev => [...prev, newBox])
+        
+        if (qty > 0) {
+          setProduction(prev => [...prev, { boxId: id, quantity: qty }])
+        }
       }
       
       setCustomForm({ l: '', w: '', h: '', quantity: '' })
@@ -708,7 +827,26 @@ export default function CajasProduccion() {
   }
   
   // Eliminar caja personalizada
-  const removeCustomBox = (boxId: string) => {
+  const removeCustomBox = async (boxId: string) => {
+    // Si el usuario está logueado, eliminar de Supabase
+    if (user) {
+      try {
+        const { error } = await supabase
+          .from('box_catalog')
+          .update({ active: false })
+          .eq('id', boxId)
+          .eq('created_by', user.id)
+        
+        if (error) {
+          console.error('Error deleting box:', error)
+          return
+        }
+      } catch (err) {
+        console.error('Error deleting box:', err)
+        return
+      }
+    }
+    
     setCustomBoxes(prev => prev.filter(b => b.id !== boxId))
     setProduction(prev => prev.filter(p => p.boxId !== boxId))
   }
@@ -1492,23 +1630,38 @@ export default function CajasProduccion() {
                 
                 <button
                   onClick={addCustomBox}
-                  disabled={!customForm.l || !customForm.w || !customForm.h || 
+                  disabled={!customForm.l || !customForm.w || !customForm.h || savingBox ||
                     (parseInt(customForm.h || '0') + parseInt(customForm.w || '0')) > 1520}
                   className="w-full bg-purple-600 text-white py-2 rounded font-display tracking-wider hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  <Check className="w-4 h-4" />
-                  AGREGAR AL CATÁLOGO
+                  {savingBox ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      GUARDANDO...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      AGREGAR AL CATÁLOGO
+                    </>
+                  )}
                 </button>
               </div>
             )}
           </div>
           
           {/* Cajas personalizadas existentes */}
-          {customBoxes.length > 0 && (
+          {loadingCustomBoxes ? (
+            <div className="mb-6 bg-purple-50 border-2 border-purple-200 p-4 rounded-lg text-center">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto text-purple-600 mb-2" />
+              <p className="text-purple-600 text-sm">Cargando cajas personalizadas...</p>
+            </div>
+          ) : customBoxes.length > 0 && (
             <div className="mb-6">
               <h3 className="font-display text-lg text-purple-700 mb-3 flex items-center gap-2">
                 <Sparkles className="w-4 h-4" />
                 CAJAS PERSONALIZADAS ({customBoxes.length})
+                {user && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Sincronizado</span>}
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {customBoxes.map(box => {
