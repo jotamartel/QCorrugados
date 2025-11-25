@@ -296,11 +296,53 @@ CREATE POLICY "Admins can update all profiles" ON profiles
   );
 
 -- Policies para box_catalog
-CREATE POLICY "Anyone can view active boxes" ON box_catalog
-  FOR SELECT USING (active = TRUE);
+-- SELECT: Cajas estándar activas visibles para todos los usuarios autenticados
+CREATE POLICY "select_standard_boxes" ON box_catalog
+  FOR SELECT USING (is_standard = TRUE AND active = TRUE);
 
-CREATE POLICY "Admins can manage boxes" ON box_catalog
-  FOR ALL USING (
+-- SELECT: Usuarios pueden ver sus propias cajas personalizadas
+CREATE POLICY "select_own_custom_boxes" ON box_catalog
+  FOR SELECT USING (is_standard = FALSE AND created_by = auth.uid());
+
+-- SELECT: Admins pueden ver todas las cajas
+CREATE POLICY "admin_select_all_boxes" ON box_catalog
+  FOR SELECT USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
+  );
+
+-- INSERT: Usuarios pueden crear cajas personalizadas (created_by debe ser el usuario actual)
+CREATE POLICY "insert_custom_boxes" ON box_catalog
+  FOR INSERT WITH CHECK (
+    auth.uid() IS NOT NULL AND
+    is_standard = FALSE AND
+    created_by = auth.uid()
+  );
+
+-- INSERT: Admins pueden crear cualquier caja
+CREATE POLICY "admin_insert_boxes" ON box_catalog
+  FOR INSERT WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
+  );
+
+-- UPDATE: Usuarios pueden actualizar sus propias cajas personalizadas
+CREATE POLICY "update_own_custom_boxes" ON box_catalog
+  FOR UPDATE
+  USING (is_standard = FALSE AND created_by = auth.uid())
+  WITH CHECK (is_standard = FALSE AND created_by = auth.uid());
+
+-- UPDATE: Admins pueden actualizar cualquier caja
+CREATE POLICY "admin_update_boxes" ON box_catalog
+  FOR UPDATE USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
+  );
+
+-- DELETE: Usuarios pueden eliminar sus propias cajas personalizadas
+CREATE POLICY "delete_own_custom_boxes" ON box_catalog
+  FOR DELETE USING (is_standard = FALSE AND created_by = auth.uid());
+
+-- DELETE: Admins pueden eliminar cualquier caja
+CREATE POLICY "admin_delete_boxes" ON box_catalog
+  FOR DELETE USING (
     EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
   );
 
@@ -356,28 +398,6 @@ CREATE INDEX idx_order_items_order ON order_items(order_id);
 CREATE INDEX idx_client_boxes_client ON client_boxes(client_id);
 
 -- =====================================================
--- POLÍTICAS RLS PARA CAJAS PERSONALIZADAS
+-- NOTA: Las políticas RLS para box_catalog están definidas
+-- arriba junto con las otras políticas de tablas
 -- =====================================================
-
--- Todos pueden ver cajas estándar
-CREATE POLICY "Anyone can view standard boxes" ON box_catalog
-  FOR SELECT USING (is_standard = TRUE AND active = TRUE);
-
--- Usuarios autenticados pueden ver sus propias cajas
-CREATE POLICY "Users can view own custom boxes" ON box_catalog
-  FOR SELECT USING (created_by = auth.uid() AND is_standard = FALSE);
-
--- Usuarios autenticados pueden crear cajas personalizadas
-CREATE POLICY "Users can create custom boxes" ON box_catalog
-  FOR INSERT WITH CHECK (auth.uid() IS NOT NULL AND is_standard = FALSE);
-
--- Usuarios pueden actualizar sus propias cajas
-CREATE POLICY "Users can update own custom boxes" ON box_catalog
-  FOR UPDATE USING (created_by = auth.uid() AND is_standard = FALSE);
-
--- Usuarios pueden eliminar sus propias cajas
-CREATE POLICY "Users can delete own custom boxes" ON box_catalog
-  FOR DELETE USING (created_by = auth.uid() AND is_standard = FALSE);
-
--- Habilitar RLS en box_catalog
-ALTER TABLE box_catalog ENABLE ROW LEVEL SECURITY;
