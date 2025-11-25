@@ -683,24 +683,34 @@ export default function CajasProduccion() {
     const loadCustomBoxes = async () => {
       if (!user) {
         setCustomBoxes([])
+        setLoadingCustomBoxes(false)
         return
       }
-      
+
+      console.log('=== LOADING CUSTOM BOXES ===')
+      console.log('User ID:', user.id)
       setLoadingCustomBoxes(true)
+
       try {
+        console.log('Querying box_catalog...')
         const { data, error } = await supabase
           .from('box_catalog')
           .select('*')
           .eq('created_by', user.id)
           .eq('is_standard', false)
           .eq('active', true)
-        
+
+        console.log('Query result - data:', data, 'error:', error)
+
         if (error) {
           console.error('Error loading custom boxes:', error)
+          setCustomBoxes([])
+          setLoadingCustomBoxes(false)
           return
         }
-        
+
         if (data) {
+          console.log('Found', data.length, 'custom boxes')
           const boxes: BoxType[] = data.map(box => ({
             id: box.id,
             name: box.name,
@@ -714,14 +724,18 @@ export default function CajasProduccion() {
             planchaW: box.plancha_w
           }))
           setCustomBoxes(boxes)
+        } else {
+          setCustomBoxes([])
         }
       } catch (err) {
         console.error('Error loading custom boxes:', err)
+        setCustomBoxes([])
       } finally {
         setLoadingCustomBoxes(false)
+        console.log('=== LOADING COMPLETE ===')
       }
     }
-    
+
     loadCustomBoxes()
   }, [user])
 
